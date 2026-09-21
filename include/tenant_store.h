@@ -285,14 +285,16 @@ public:
                                       const std::string& agent_id,
                                       const std::string& agent_def_json = "");
 
-    // List newest first.  `before_updated_at == 0` means "from the latest";
-    // pass the previous page's last `updated_at` to paginate backward.
-    // `limit` is hard-capped at 200.
+    // List newest first.  `before_updated_at == 0` means "from the latest".
+    // Pass the previous page's last `updated_at` (and `before_id`, the last
+    // row's id) to paginate backward.  Without `before_id`, rows that share
+    // a second with the cursor are skipped.  `limit` is hard-capped at 200.
     // `folder_id_filter`: -1 = no filter; 0 = unfiled only; >0 = that folder.
     std::vector<Conversation> list_conversations(int64_t tenant_id,
                                                   int64_t before_updated_at,
                                                   int     limit,
-                                                  int64_t folder_id_filter = -1) const;
+                                                  int64_t folder_id_filter = -1,
+                                                  int64_t before_id = 0) const;
 
     std::optional<Conversation> get_conversation(int64_t tenant_id, int64_t id) const;
 
@@ -498,6 +500,14 @@ public:
     std::vector<AgentRecord> list_agent_records_for_routing(
         int64_t tenant_id) const;
 
+    // Newest-200 catalog plus a targeted id that fell off that page.
+    // GET /v1/agents/:id uses get_agent_record; orchestrate / A2A /
+    // scheduler used to install only the REST list page and 404 a stored
+    // agent GET still found.  Empty / "index" skip the extra fetch.
+    // Sibling /agent and /parallel still resolve from the newest-200 page.
+    std::vector<AgentRecord> list_agent_records_for_dispatch(
+        int64_t tenant_id, const std::string& target_agent_id) const;
+
     // Wholesale replace.  Bumps updated_at.  Returns false if the row
     // doesn't exist for this tenant.
     bool update_agent_record(int64_t tenant_id,
@@ -618,6 +628,9 @@ public:
         bool        rollback_on_failure = false;
         std::string snapshot_path;
         std::string result_json;
+        std::string mode;
+        std::string agent_map_json;
+        std::string budgets_json;
         int64_t     created_at = 0;
         int64_t     updated_at = 0;
     };
@@ -802,8 +815,9 @@ public:
 
     // PATCH-style: any std::nullopt argument leaves the field
     // untouched.  Setting status to a terminal value stamps
-    // completed_at automatically (caller can override by passing a
-    // value through completed_at).
+    // completed_at automatically; setting it to a non-terminal value
+    // clears completed_at (caller can override by passing a value
+    // through completed_at).
     bool update_todo(int64_t tenant_id, int64_t id,
                       const std::optional<std::string>& subject,
                       const std::optional<std::string>& description,
@@ -986,7 +1000,9 @@ public:
                           const std::string& state);
 
     // Update state + payload columns.  No-op if the row is missing for
-    // this tenant; returns true on actual change.
+    // this tenant, or if the row is already `canceled` and `state` is
+    // not `canceled` (tasks/cancel must win over an in-flight
+    // message/send terminal persist).  Returns true on actual change.
     bool update_a2a_task(int64_t tenant_id,
                           const std::string& task_id,
                           const std::string& state,
@@ -1135,7 +1151,7 @@ public:
         // `types` and `tag` become *boost factors* — matching rows score
         // higher rather than non-matching rows being excluded.
         std::vector<std::string> types;             // OR-set; boost when q is set
-        std::string              tag;               // single-tag substring match
+        std::string              tag;               // single-tag JSON substring; LIKE wildcards are literals
         std::string              q;                 // FTS5 query when set
         int64_t                  since                 = 0;  // created_at >= since
         int64_t                  before_updated_at     = 0;  // cursor; 0 = latest

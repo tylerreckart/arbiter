@@ -243,10 +243,17 @@ bool is_decoration_cmd(std::string_view name) {
            name == "Bigr";
 }
 
-std::string convert(std::string_view latex);
+// Hard cap on recursive convert() depth.  Nested \frac / ^ / _ / \sqrt /
+// \text in model or user markdown would otherwise blow the TUI/API thread
+// stack — each nesting level recurses through convert().  64 is deeper
+// than any legitimate equation and far below the ~10k-frame limit of an
+// 8 MiB pthread stack (same rationale as json.cpp::kMaxDepth).
+static constexpr int kMaxConvertDepth = 64;
 
-std::string convert_script(std::string_view raw, bool super) {
-    std::string inner = convert(raw);
+std::string convert(std::string_view latex, int depth);
+
+std::string convert_script(std::string_view raw, bool super, int depth) {
+    std::string inner = convert(raw, depth);
     if (std::string mapped = try_script(inner, super); !mapped.empty()) {
         return mapped;
     }
@@ -260,7 +267,11 @@ std::string convert_script(std::string_view raw, bool super) {
     return out;
 }
 
-std::string convert(std::string_view latex) {
+std::string convert(std::string_view latex, int depth) {
+    if (depth > kMaxConvertDepth) {
+        // Fail closed: emit the raw fragment rather than recurse.
+        return std::string(latex);
+    }
     std::string out;
     out.reserve(latex.size());
     size_t i = 0;
@@ -275,14 +286,14 @@ std::string convert(std::string_view latex) {
 
         if (c == '^') {
             auto [arg, end] = read_script_arg(latex, i + 1);
-            out += convert_script(arg, true);
+            out += convert_script(arg, true, depth + 1);
             i = end;
             continue;
         }
 
         if (c == '_') {
             auto [arg, end] = read_script_arg(latex, i + 1);
-            out += convert_script(arg, false);
+            out += convert_script(arg, false, depth + 1);
             i = end;
             continue;
         }
@@ -368,8 +379,8 @@ std::string convert(std::string_view latex) {
             if (name == "frac" || name == "dfrac" || name == "tfrac") {
                 auto [num, after_num] = read_brace_group(latex, skip_ws(latex, j));
                 auto [den, after_den] = read_brace_group(latex, skip_ws(latex, after_num));
-                const std::string n = convert(num);
-                const std::string d = convert(den);
+                const std::string n = convert(num, depth + 1);
+                const std::string d = convert(den, depth + 1);
                 const bool simple_n = n.size() == 1;
                 const bool simple_d = d.size() == 1;
                 if (!simple_n) out += '(';
@@ -390,7 +401,8 @@ std::string convert(std::string_view latex) {
                 if (at < latex.size() && latex[at] == '[') {
                     size_t close = latex.find(']', at + 1);
                     if (close != std::string_view::npos) {
-                        std::string idx = convert(latex.substr(at + 1, close - at - 1));
+                        std::string idx = convert(latex.substr(at + 1, close - at - 1),
+                                                  depth + 1);
                         if (std::string mapped = try_script(idx, true); !mapped.empty()) {
                             out += mapped;
                         } else {
@@ -401,7 +413,7 @@ std::string convert(std::string_view latex) {
                 }
                 auto [body, end] = read_brace_group(latex, skip_ws(latex, at));
                 out += "\u221a";  // √
-                const std::string inner = convert(body);
+                const std::string inner = convert(body, depth + 1);
                 if (inner.size() == 1) {
                     out += inner;
                 } else {
@@ -428,7 +440,7 @@ std::string convert(std::string_view latex) {
                 }
                 out.append(body.data(), lead);
                 if (trail > lead) {
-                    out += convert(body.substr(lead, trail - lead));
+                    out += convert(body.substr(lead, trail - lead), depth + 1);
                 }
                 out.append(body.data() + trail, body.size() - trail);
                 i = (end == skip_ws(latex, j)) ? j : end;
@@ -440,7 +452,7 @@ std::string convert(std::string_view latex) {
                 name == "dot" || name == "ddot" || name == "widehat" ||
                 name == "widetilde" || name == "mathbf" || name == "boldsymbol") {
                 auto [body, end] = read_brace_group(latex, skip_ws(latex, j));
-                out += convert(body);
+                out += convert(body, depth + 1);
                 if (name == "hat" || name == "widehat") out += "\u0302";
                 else if (name == "tilde" || name == "widetilde") out += "\u0303";
                 else if (name == "bar" || name == "overline") out += "\u0305";
@@ -482,7 +494,7 @@ std::string convert(std::string_view latex) {
 } // namespace
 
 std::string latex_math_to_plain(std::string_view latex) {
-    return convert(latex);
+    return convert(latex, 0);
 }
 
 } // namespace arbiter
