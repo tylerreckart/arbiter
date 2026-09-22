@@ -16,6 +16,8 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   fields throw at parse. Stock `agents/*.json` stay unrestricted unless
   an operator adds a block. Presence review does not consult the gate.
   See [Delegation policies](docs/concepts/delegation.md).
+## [0.13.11] — 2026-09-21
+
 - **Fleet dashboard pane (Phase C1).** The TUI consumes fleet SSE (`stream_id` +
   `depth`) into an in-memory tree and paints a right-rail dashboard: depth
   indent, agent, active tool, token totals, and a `◇` marker on reconcile JIT

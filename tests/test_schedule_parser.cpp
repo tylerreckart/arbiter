@@ -104,14 +104,14 @@ TEST_CASE("parse: 'on YYYY-MM-DD'") {
         CHECK(!past.ok);
     }
 
-<<<<<<< HEAD
     SUBCASE("year 1 does not persist next_fire_at=-1") {
         // mktime fails or yields a pre-epoch value; either way we fail
         // closed instead of storing -1 (which list_due treats as always due).
         auto r = parse_schedule_phrase("on 0001-01-01 at 09:00", now);
         CHECK_FALSE(r.ok);
         CHECK(r.spec.next_fire_at == 0);
-=======
+    }
+
     SUBCASE("rejects calendar-impossible dates instead of overflowing") {
         // mktime would turn Feb 31 into early March; /schedule must fail closed.
         auto feb31 = parse_schedule_phrase("on 2027-02-31 at 12:00", now);
@@ -130,7 +130,6 @@ TEST_CASE("parse: 'on YYYY-MM-DD'") {
         CHECK(leap.ok);
         CHECK(leap.spec.kind == ScheduleSpec::Kind::Once);
         CHECK(leap.spec.fire_at > now);
->>>>>>> origin/main
     }
 }
 

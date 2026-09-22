@@ -162,7 +162,6 @@ TEST_CASE("sandbox read: O_NOFOLLOW refuses leaf symlink swap after resolve") {
     cfg.workspaces_root = root + "/workspaces";
     cfg.runtime = "docker";
     cfg.idle_seconds = 0;
-<<<<<<< HEAD
 
     const int64_t tid = 8;
     const std::string decoy = cfg.workspaces_root + "/t" +
@@ -173,17 +172,6 @@ TEST_CASE("sandbox read: O_NOFOLLOW refuses leaf symlink swap after resolve") {
         REQUIRE(::symlink(outside.c_str(), decoy.c_str()) == 0);
         swapped = true;
     };
-=======
-    // The reader sleeps this long between resolve and the O_NOFOLLOW
-    // open, giving the planter thread room to swap the leaf for a
-    // symlink.  80ms was too tight on the loaded macos-arm64 runner:
-    // std::this_thread::sleep_for has coarse timer granularity there,
-    // so the planter's pre-swap sleep overshot the reader's open and
-    // the reader saw the still-regular decoy (ok=true, no leak, but
-    // CHECK_FALSE(ok) failed).  400ms gives the swap a wide margin to
-    // land before the open regardless of scheduler jitter.
-    cfg.read_check_pause_ms = 400;
->>>>>>> origin/main
 
     const std::string bin = root + "/bin";
     fs::create_directories(bin);
@@ -205,25 +193,6 @@ TEST_CASE("sandbox read: O_NOFOLLOW refuses leaf symlink swap after resolve") {
 
     std::string werr;
     REQUIRE(mgr.write_to_workspace(tid, "decoy.txt", "workspace-bytes", werr));
-<<<<<<< HEAD
-=======
-    const std::string decoy = ws + "/decoy.txt";
-
-    std::atomic<bool> swapped{false};
-    std::thread planter([&]() {
-        // A tiny sleep lets the reader's resolve_within_workspace finish
-        // first (resolve is a handful of syscalls, well under a
-        // millisecond) so the swap lands *after* resolve and the open
-        // hits the O_NOFOLLOW refusal path rather than resolve-rejection.
-        // 5ms is enough to lose resolve but, with read_check_pause_ms
-        // above, far inside the reader's pre-open window even when the
-        // macOS timer coarsely oversleeps.
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        ::unlink(decoy.c_str());
-        REQUIRE(::symlink(outside.c_str(), decoy.c_str()) == 0);
-        swapped.store(true);
-    });
->>>>>>> origin/main
 
     std::string content, mime, err;
     const bool ok = mgr.read_from_workspace(tid, "decoy.txt", content, mime, err);
