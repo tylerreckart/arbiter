@@ -63,7 +63,7 @@ calendar commitments.
 - [x] **Always-on presence-** Constitution `presence.mode: always_on`; a pair colleague looks over a peer's shoulder after each tool batch and may inject `[PRESENCE: …]` context. Fail-open; cannot halt. SSE `presence` + TUI `◎ presence`. Opposite lifetime of JIT (#208).
 - [x] **Fleet dashboard pane-** Live tree of depth, agent, tools, tokens; click-to-focus / `Ctrl-w f` ([docs](docs/tui/fleet.md))
 - [ ] **Plan to execution observability-** Planner plans as first-class objects with progress against todos
-- [ ] **Delegation policies-** Consitutions declare max depth, allowed callees, budget caps (tokens/$)
+- [x] **Delegation policies-** Constitutions declare max depth, allowed callees, budget caps (tokens/$)
 - [ ] ~~**Workflow recipes-** Checked-in “crews” (JSON): ordered/parallel graphs of agents + shared todo board~~
 - [ ] **Advisor policy packs-** Reusable gate profiles (strict / coding / research)
 

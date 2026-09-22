@@ -166,16 +166,72 @@ void Orchestrator::load_agents(const std::string& dir) {
     }
 }
 
+void Orchestrator::clear_delegation_spend() {
+    std::lock_guard<std::mutex> lk(delegation_spend_mu_);
+    delegation_spend_.clear();
+}
+
+void Orchestrator::record_delegation_spend(const std::string& caller_id,
+                                           int tokens, double usd) {
+    if (caller_id.empty()) return;
+    std::lock_guard<std::mutex> lk(delegation_spend_mu_);
+    auto& s = delegation_spend_[caller_id];
+    s.tokens += std::max(0, tokens);
+    s.usd += std::max(0.0, usd);
+}
+
+DelegationSpend Orchestrator::delegation_spend_for(const std::string& caller_id) const {
+    std::lock_guard<std::mutex> lk(delegation_spend_mu_);
+    auto it = delegation_spend_.find(caller_id);
+    if (it == delegation_spend_.end()) return {};
+    return it->second;
+}
+
+const Constitution* Orchestrator::find_constitution(const std::string& id) const {
+    if (id == "index") return &index_master_->config();
+    std::lock_guard<std::mutex> lock(agents_mutex_);
+    auto it = agents_.find(id);
+    if (it == agents_.end()) return nullptr;
+    return &it->second->config();
+}
+
+std::string Orchestrator::check_delegation_spawn(
+        const std::string& caller_id,
+        const Constitution& caller_cfg,
+        const std::string& callee_id,
+        int child_depth) const {
+    const Constitution* callee = find_constitution(callee_id);
+    return delegation_spawn_error(caller_cfg, callee, callee_id, child_depth,
+                                  delegation_spend_for(caller_id));
+}
+
+namespace {
+
+void credit_caller_spend(Orchestrator& orch,
+                         const std::string& caller_id,
+                         const std::string& callee_id,
+                         const std::string& callee_model,
+                         const ApiResponse& resp) {
+    const int tok = std::max(0, resp.input_tokens) + std::max(0, resp.output_tokens);
+    const double usd = delegation_estimate_usd(
+        callee_model, resp.input_tokens, resp.output_tokens);
+    DelegationSpend nested = orch.delegation_spend_for(callee_id);
+    orch.record_delegation_spend(caller_id, tok + nested.tokens, usd + nested.usd);
+}
+
+} // namespace
+
 // Build an AgentInvoker that runs a sub-agent through the full dispatch loop.
 AgentInvoker Orchestrator::make_invoker(const std::string& caller_id, int depth,
                                        std::map<std::string, std::string>* shared_cache,
-                                       const std::string& original_query) {
-    if (depth >= 2) {
+                                       const std::string& original_query,
+                                       const Constitution& caller_cfg) {
+    if (depth >= Constitution::DelegationPolicy::kGlobalMaxDepth) {
         return [](const std::string&, const std::string&) -> std::string {
             return "ERR: delegation depth limit reached (max 2 levels)";
         };
     }
-    return [this, caller_id, depth, shared_cache, original_query](
+    return [this, caller_id, depth, shared_cache, original_query, caller_cfg](
                const std::string& sub_id, const std::string& sub_msg) -> std::string {
         if (sub_id == caller_id) return "ERR: agent cannot invoke itself";
         if (sub_id == "index") return "ERR: index cannot be delegated to";
@@ -183,6 +239,10 @@ AgentInvoker Orchestrator::make_invoker(const std::string& caller_id, int depth,
             std::lock_guard<std::mutex> lk(agents_mutex_);
             if (!agents_.count(sub_id))
                 return "ERR: no agent '" + sub_id + "'";
+        }
+        if (auto err = check_delegation_spawn(caller_id, caller_cfg, sub_id,
+                                              depth + 1); !err.empty()) {
+            return err;
         }
 
         // Inject delegation context so sub-agent knows the user's goal
@@ -257,21 +317,29 @@ AgentInvoker Orchestrator::make_invoker(const std::string& caller_id, int depth,
         // Shared cache propagates so sub-agents don't re-fetch URLs.
         auto resp = send_internal(sub_id, enriched_msg, depth + 1,
                                   shared_cache, original_query);
+        std::string model;
+        {
+            std::lock_guard<std::mutex> lk(agents_mutex_);
+            auto it = agents_.find(sub_id);
+            if (it != agents_.end()) model = it->second->config().model;
+        }
+        credit_caller_spend(*this, caller_id, sub_id, model, resp);
         return resp.ok ? resp.content : "ERR: " + resp.error;
     };
 }
 
 ParallelInvoker Orchestrator::make_parallel_invoker(const std::string& caller_id,
                                                      int depth,
-                                                     const std::string& original_query) {
-    if (depth >= 2) {
+                                                     const std::string& original_query,
+                                                     const Constitution& caller_cfg) {
+    if (depth >= Constitution::DelegationPolicy::kGlobalMaxDepth) {
         return [](const std::vector<std::pair<std::string, std::string>>& kids) {
             return std::vector<std::string>(
                 kids.size(), "ERR: /parallel cannot delegate past depth 2");
         };
     }
 
-    return [this, caller_id, depth, original_query](
+    return [this, caller_id, depth, original_query, caller_cfg](
                const std::vector<std::pair<std::string, std::string>>& kids)
                -> std::vector<std::string> {
         if (kids.size() > kMaxParallelChildren) {
@@ -341,7 +409,7 @@ ParallelInvoker Orchestrator::make_parallel_invoker(const std::string& caller_id
             const std::string sub_id  = kids[i].first;
             const std::string sub_msg = kids[i].second;
             threads.emplace_back([this, i, sub_id, sub_msg, caller_id, depth,
-                                   original_query, &results, &child_clients,
+                                   original_query, caller_cfg, &results, &child_clients,
                                    pane_binder, conv_key, parent_token]() {
                 if (pane_binder) pane_binder();
                 ConversationScope scope(conv_key);
@@ -370,6 +438,11 @@ ParallelInvoker Orchestrator::make_parallel_invoker(const std::string& caller_id
                     // while another thread is mutating the registry.  The
                     // returned cfg_copy is owned solely by this thread.
                     cfg_copy = it->second->config();
+                }
+                if (auto err = check_delegation_spawn(caller_id, caller_cfg, sub_id,
+                                                      depth + 1); !err.empty()) {
+                    results[i] = err;
+                    return;
                 }
 
                 // Match make_invoker's delegation-context prelude so the
@@ -444,6 +517,8 @@ ParallelInvoker Orchestrator::make_parallel_invoker(const std::string& caller_id
                 try {
                     auto resp = run_dispatch(ephemeral, sub_id, enriched_msg,
                                               depth + 1, &local_cache, orig_q);
+                    credit_caller_spend(*this, caller_id, sub_id,
+                                        ephemeral.config().model, resp);
                     results[i] = resp.ok ? resp.content : "ERR: " + resp.error;
                 } catch (const std::exception& e) {
                     results[i] = std::string("ERR: ") + e.what();
@@ -488,9 +563,27 @@ ApiResponse Orchestrator::run_ephemeral(const std::string& agent_id,
         return err;
     }
 
+    // JIT covers are spawned at depth 1.  Honour the index caller's
+    // constitution (stock index has no extra policy) and the cover's own
+    // max_depth so a constitution that forbids `forge` or depth>1 is
+    // fail-closed here the same way /agent is.
+    {
+        std::string err = delegation_spawn_error(
+            index_master_->config(), &cfg, agent_id, /*child_depth=*/1,
+            delegation_spend_for("index"));
+        if (!err.empty()) {
+            ApiResponse r;
+            r.ok = false;
+            r.error = err;
+            r.error_type = "delegation_policy";
+            return r;
+        }
+    }
+
     // Subset validation is the supervisor on this path.  Advisor gate
     // CONTINUE/REDIRECT/HALT and presence residency must not hitch a ride
-    // on a JIT clone.
+    // on a JIT clone.  Delegation policy stays — nested /agent from the
+    // clone still fail-closes.
     cfg.advisor.mode = "off";
     cfg.presence.mode = "off";
     cfg.intent.mode = "off";
@@ -521,6 +614,7 @@ ApiResponse Orchestrator::run_ephemeral(const std::string& agent_id,
         std::string orig_q = original_query.empty() ? message : original_query;
         out = run_dispatch(ephemeral, agent_id, message, /*depth=*/1,
                            &local_cache, orig_q);
+        credit_caller_spend(*this, "index", agent_id, ephemeral.config().model, out);
         // Drop clone residency explicitly; destructor would too.
         ephemeral.reset_all_histories();
     } catch (const std::exception& e) {
@@ -675,6 +769,9 @@ std::string Orchestrator::collect_presence_notes(
     const std::string& tool_summary,
     int stream_id,
     std::map<std::string, int>& notes_used) {
+    // Presence is fail-open and cannot halt.  Do not consult
+    // constitution.delegation here — a spawn policy must not turn a
+    // pair-colleague review into an ERR / HALT.
 
     struct Watcher {
         std::string id;
@@ -1071,9 +1168,11 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
         } catch (...) { /* never let todo probe break dispatch */ }
     }
 
-    auto invoker          = make_invoker(agent_id, depth, shared_cache, orig_q);
+    auto invoker          = make_invoker(agent_id, depth, shared_cache, orig_q,
+                                          agent.config());
     auto advisor_invoker  = make_advisor_invoker(agent_id);
-    auto parallel_invoker = make_parallel_invoker(agent_id, depth, orig_q);
+    auto parallel_invoker = make_parallel_invoker(agent_id, depth, orig_q,
+                                                 agent.config());
 
     // Gate-mode advisor wiring.  Built lazily — if the agent's advisor
     // config is anything other than mode == "gate", the gate is never
@@ -1428,6 +1527,7 @@ ApiResponse Orchestrator::send(const std::string& agent_id,
         r.error      = "cancelled";
         return r;
     }
+    clear_delegation_spend();
     return send_internal(agent_id, message, 0, nullptr, original_query);
 }
 
@@ -1520,6 +1620,7 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
         r.error      = "cancelled";
         return r;
     }
+    clear_delegation_spend();
 
     Agent* agent_ptr;
     std::vector<ContentPart> current_parts;
@@ -1752,9 +1853,11 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     end_iteration(cmds);
 
     std::map<std::string, std::string> shared_cache;
-    auto invoker          = make_invoker(dispatch_id, 0, &shared_cache, orig_q);
+    auto invoker          = make_invoker(dispatch_id, 0, &shared_cache, orig_q,
+                                          agent_ptr->config());
     auto advisor_invoker  = make_advisor_invoker(dispatch_id);
-    auto parallel_invoker = make_parallel_invoker(dispatch_id, 0, orig_q);
+    auto parallel_invoker = make_parallel_invoker(dispatch_id, 0, orig_q,
+                                                 agent_ptr->config());
 
     // Gate-mode wiring (master / top-level).  Same construction as
     // run_dispatch — see the longer comment there for the reasoning.
@@ -2434,9 +2537,11 @@ std::string Orchestrator::execute_slash_command(const std::string& line,
     }
 
     std::map<std::string, std::string> dedup_cache;
-    auto invoker          = make_invoker(agent_id, 0, &dedup_cache, "");
+    auto invoker          = make_invoker(agent_id, 0, &dedup_cache, "",
+                                          agent_ptr->config());
     auto advisor_invoker  = make_advisor_invoker(agent_id);
-    auto parallel_invoker = make_parallel_invoker(agent_id, 0, "");
+    auto parallel_invoker = make_parallel_invoker(agent_id, 0, "",
+                                                 agent_ptr->config());
 
     CommandCancelScope cancel_scope([this] { return turn_is_cancelled(); });
     return execute_agent_commands(cmds, agent_id, memory_dir_,
