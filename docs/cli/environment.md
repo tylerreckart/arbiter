@@ -37,6 +37,9 @@ See [`docs/cli/connect.md`](connect.md). Local provider keys (`OPENROUTER_API_KE
 | `ARBITER_CIRCUIT_COOLDOWN_SECONDS`  | Cooldown in Open before a half-open probe. Default `30` (clamped ≥0). |
 | `ARBITER_INTENT_LLM_RATE_PER_MIN` | Extra per-tenant token bucket for `POST /v1/intent` hybrid/llm classify. Default `20`. `0` disables. Independent of `ARBITER_TENANT_RATE_PER_MIN`. See [Operations → Per-tenant rate / concurrency limiting](../concepts/operations.md#per-tenant-rate--concurrency-limiting). |
 | `ARBITER_INTENT_LLM_RATE_BURST` | Burst for the intent LLM bucket. Default `5`. |
+| `ARBITER_DECISION_MODEL` | Local `ollama/…` id for the closed-set label filter. Unset, empty, or any non-`ollama/` id leaves the filter off. Hosted models are not called. |
+| `ARBITER_PRESENCE_SILENCE_MARGIN` | Margin (peak minus runner-up) required before an extreme `silent` skips a presence review. `0` or unset disables that skip. Clamped to `[0, 1]`. A skip also requires peak ≥ 0.9. See [Presence](../concepts/presence.md#silence-filter). |
+| `ARBITER_INTENT_ROUTE_MARGIN` | Margin required before a no-cue utterance routes from the label filter without the advisor completion. `0` or unset disables that route. Clamped to `[0, 1]`. A route also requires peak ≥ 0.9. See [Intent](../concepts/intent.md#hybrid-classify). |
 
 ## TUI session durability
 

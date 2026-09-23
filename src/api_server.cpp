@@ -4874,7 +4874,18 @@ void handle_intent_classify(int fd, const HttpRequest& req,
         }
     }
 
-    Intent intent = resolve_intent(in, cfg, llm);
+    LabelScorer scorer;
+    DecisionFilterConfig decision = decision_filter_from_env();
+    if (decision.enabled_for_intent() &&
+        (cfg.mode == "hybrid" || cfg.mode == "llm")) {
+        const std::string model = decision.model;
+        scorer = [&](const std::string& state,
+                     const std::vector<LabelSpec>& specs) {
+            return score_labels(orch->client(), model, state, specs).distribution;
+        };
+    }
+
+    Intent intent = resolve_intent(in, cfg, llm, scorer, decision.intent_route_margin);
     if (llm_rate_limited) {
         write_429_response(fd, llm_retry_after, "intent_llm_rate_limit",
                            metrics, tenant.id);
@@ -4897,6 +4908,11 @@ void handle_intent_classify(int fd, const HttpRequest& req,
     m["llm_used"] = jbool(intent.llm_used);
     m["malformed"] = jbool(intent.malformed);
     m["applied"] = jbool(applied);
+    if (intent.decision_consulted) {
+        m["decision_peak"] = jnum(intent.decision_peak);
+        m["decision_margin"] = jnum(intent.decision_margin);
+        m["decision_label"] = jstr(intent.decision_label);
+    }
     m["requested_agent"] = jstr(in.requested_agent);
     if (!intent.todo_seeds.empty()) {
         auto arr = jarr();
@@ -10333,6 +10349,12 @@ void handle_orchestrate(int fd, const HttpRequest& req,
             m["kind"]    = jstr(ev.kind);
             if (!ev.detail.empty()) m["detail"] = jstr(ev.detail);
             if (ev.malformed)       m["malformed"] = jbool(true);
+            if (ev.filter_consulted) {
+                m["filter_action"] = jstr(ev.filter_action);
+                m["filter_peak"] = jnum(ev.filter_peak);
+                m["filter_margin"] = jnum(ev.filter_margin);
+                m["filter_label"] = jstr(ev.filter_label);
+            }
             emit("presence", p);
         });
 
@@ -10359,6 +10381,11 @@ void handle_orchestrate(int fd, const HttpRequest& req,
             m["plan_seed_count"] = jnum(static_cast<double>(ev.intent.plan_seeds.size()));
             if (ev.intent.llm_used) m["llm_used"] = jbool(true);
             if (ev.intent.malformed) m["malformed"] = jbool(true);
+            if (ev.intent.decision_consulted) {
+                m["decision_peak"] = jnum(ev.intent.decision_peak);
+                m["decision_margin"] = jnum(ev.intent.decision_margin);
+                m["decision_label"] = jstr(ev.intent.decision_label);
+            }
             emit("intent", p);
         });
 

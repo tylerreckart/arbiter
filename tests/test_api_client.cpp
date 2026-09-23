@@ -273,6 +273,32 @@ TEST_CASE("openai body emits inline base64 as a data: URL") {
     CHECK(body.find("\"type\":\"text\"") != std::string::npos);
 }
 
+TEST_CASE("ollama body emits logprobs only when the decision filter asks") {
+    ApiRequest req;
+    req.model = "ollama/qwen3:0.6b";
+    req.max_tokens = 1;
+    req.logprobs = true;
+    req.top_logprobs = 8;
+    Message m;
+    m.role = "user";
+    m.content = "S or C";
+    req.messages.push_back(m);
+
+    Provider prov;
+    prov.name = "ollama";
+    prov.format = Provider::FORMAT_OPENAI_CHAT;
+
+    auto body = ApiClient::build_body_openai(prov, req, /*streaming=*/false);
+    CHECK(body.find("\"logprobs\":true") != std::string::npos);
+    CHECK(body.find("\"top_logprobs\":8") != std::string::npos);
+    CHECK(body.find("\"max_tokens\":1") != std::string::npos);
+
+    req.logprobs = false;
+    req.top_logprobs = 0;
+    auto plain = ApiClient::build_body_openai(prov, req, /*streaming=*/false);
+    CHECK(plain.find("logprobs") == std::string::npos);
+}
+
 TEST_CASE("openrouter body keeps canonical hosted model slug") {
     ApiRequest req;
     req.model      = "openrouter/openai/gpt-5.2";

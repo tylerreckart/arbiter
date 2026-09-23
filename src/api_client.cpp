@@ -2,6 +2,7 @@
 // See api_client.h for the routing model.
 #include "api_client.h"
 #include "circuit_breaker.h"
+#include "label_score.h"
 #include "metrics.h"
 
 #include <cctype>
@@ -741,6 +742,12 @@ std::string ApiClient::build_body_openai(const Provider& prov,
     if (is_openai) m["max_completion_tokens"] = jnum(static_cast<double>(req.max_tokens));
     else           m["max_tokens"]            = jnum(static_cast<double>(req.max_tokens));
     if (req.include_temperature && !reasoning) m["temperature"] = jnum(req.temperature);
+    // Opt-in. The decision filter is the only caller, and only for ollama/.
+    if (req.logprobs) {
+        m["logprobs"] = jbool(true);
+        if (req.top_logprobs > 0)
+            m["top_logprobs"] = jnum(static_cast<double>(req.top_logprobs));
+    }
     if (streaming) {
         m["stream"] = jbool(true);
         // OpenAI only reports usage on the terminal stream chunk when you opt
@@ -1915,6 +1922,42 @@ ApiResponse ApiClient::stream(const ApiRequest& req, StreamCallback cb) {
     r.ok    = false;
     r.error = "Stream failed after retries";
     return r;
+}
+
+LabelScoreCall score_labels(ApiClient& client,
+                            const std::string& model,
+                            const std::string& state,
+                            const std::vector<LabelSpec>& specs) {
+    LabelScoreCall call;
+    call.model = model;
+    if (model.rfind("ollama/", 0) != 0 || specs.empty()) return call;
+
+    ApiRequest req;
+    req.model = model;
+    req.max_tokens = 1;
+    req.temperature = 0;
+    req.include_temperature = true;
+    req.logprobs = true;
+    int top = static_cast<int>(specs.size()) + 5;
+    if (top < 8) top = 8;
+    if (top > 20) top = 20;
+    req.top_logprobs = top;
+    req.system_prompt = label_score_system_prompt();
+    Message msg;
+    msg.role = "user";
+    msg.content = label_score_user_prompt(state, specs);
+    req.messages.push_back(std::move(msg));
+
+    ApiResponse resp = client.complete(req);
+    call.called = true;
+    call.response_ok = resp.ok;
+    call.input_tokens = resp.input_tokens;
+    call.output_tokens = resp.output_tokens;
+    call.cache_read_tokens = resp.cache_read_tokens;
+    call.cache_creation_tokens = resp.cache_creation_tokens;
+    if (!resp.ok) return call;
+    call.distribution = distribution_from_openai_body(specs, resp.raw_body);
+    return call;
 }
 
 } // namespace arbiter

@@ -430,3 +430,233 @@ TEST_CASE("standalone heuristic does not invoke llm on unconfident text") {
     CHECK_FALSE(out.llm_used);
     CHECK(out.source == "heuristic");
 }
+
+static LabelDistribution peaked(const std::string& name, double peak, double margin) {
+    LabelDistribution d;
+    d.ok = true;
+    d.argmax = name;
+    d.peak = peak;
+    d.margin = margin;
+    return d;
+}
+
+TEST_CASE("no-cue peaked research skips the llm") {
+    IntentInput in;
+    in.text = "Hello, how is the weather in the garden?";
+    in.requested_agent = "index";
+    in.roster = starter_roster();
+    bool llm_called = false;
+    bool scored = false;
+    auto scorer = [&](const std::string& state, const std::vector<LabelSpec>& specs) {
+        scored = true;
+        CHECK(state.find("garden") != std::string::npos);
+        bool unknown = false, multi = false, research = false;
+        for (const auto& s : specs) {
+            if (s.name == "unknown") unknown = true;
+            if (s.name == "multi") multi = true;
+            if (s.name == "research") research = true;
+        }
+        CHECK(unknown);
+        CHECK(research);
+        CHECK_FALSE(multi);
+        return peaked("research", 0.96, 0.9);
+    };
+    auto llm = [&](const std::string&) {
+        llm_called = true;
+        return std::string("<intent><kind>write</kind><confidence>0.9</confidence>"
+                           "<agent>quill</agent><brief>no</brief></intent>");
+    };
+    auto out = resolve_intent(in, hybrid_cfg(), llm, scorer, 0.5);
+    CHECK(scored);
+    CHECK_FALSE(llm_called);
+    CHECK(out.source == "decision");
+    CHECK(out.kind == "research");
+    CHECK(out.target_agent == "scout");
+    CHECK(out.confidence == doctest::Approx(0.96));
+    CHECK(out.llm_used == false);
+    CHECK(out.decision_consulted);
+    CHECK(out.decision_label == "research");
+    CHECK(out.brief.find("scout") != std::string::npos);
+    CHECK(intent_should_apply(hybrid_cfg(), out, "index"));
+}
+
+TEST_CASE("flat distribution still calls the llm") {
+    IntentInput in;
+    in.text = "Hello, how is the weather in the garden?";
+    in.requested_agent = "index";
+    in.roster = starter_roster();
+    bool llm_called = false;
+    auto scorer = [&](const std::string&, const std::vector<LabelSpec>&) {
+        return peaked("research", 0.4, 0.05);
+    };
+    auto llm = [&](const std::string&) {
+        llm_called = true;
+        return std::string("<intent><kind>write</kind><confidence>0.91</confidence>"
+                           "<agent>quill</agent><brief>draft it</brief></intent>");
+    };
+    auto out = resolve_intent(in, hybrid_cfg(), llm, scorer, 0.5);
+    CHECK(llm_called);
+    CHECK(out.source == "llm");
+    CHECK(out.kind == "write");
+    CHECK(out.target_agent == "quill");
+    CHECK(out.decision_consulted);
+    CHECK(out.decision_label == "research");
+    CHECK(out.decision_peak == doctest::Approx(0.4));
+}
+
+TEST_CASE("unknown argmax does not route") {
+    IntentInput in;
+    in.text = "Hello, how is the weather in the garden?";
+    in.requested_agent = "index";
+    in.roster = starter_roster();
+    bool llm_called = false;
+    auto scorer = [&](const std::string&, const std::vector<LabelSpec>&) {
+        return peaked("unknown", 0.99, 0.95);
+    };
+    auto llm = [&](const std::string&) {
+        llm_called = true;
+        return std::string("<intent><kind>research</kind><confidence>0.9</confidence>"
+                           "<agent>scout</agent><brief>x</brief></intent>");
+    };
+    auto out = resolve_intent(in, hybrid_cfg(), llm, scorer, 0.5);
+    CHECK(llm_called);
+    CHECK(out.source == "llm");
+    CHECK(out.kind == "research");
+}
+
+TEST_CASE("a below-floor peak falls through") {
+    IntentInput in;
+    in.text = "Hello, how is the weather in the garden?";
+    in.requested_agent = "index";
+    in.roster = starter_roster();
+    bool llm_called = false;
+    auto scorer = [&](const std::string&, const std::vector<LabelSpec>&) {
+        return peaked("research", 0.85, 0.8);
+    };
+    auto llm = [&](const std::string&) {
+        llm_called = true;
+        return std::string("<intent><kind>ops</kind><confidence>0.9</confidence>"
+                           "<agent>forge</agent><brief>x</brief></intent>");
+    };
+    auto out = resolve_intent(in, hybrid_cfg(), llm, scorer, 0.5);
+    CHECK(llm_called);
+    CHECK(out.source == "llm");
+    CHECK(out.kind == "ops");
+}
+
+TEST_CASE("multi-cue text does not consult the scorer") {
+    IntentInput in;
+    in.text = "Look up primary sources and write a Dockerfile";
+    in.requested_agent = "index";
+    in.roster = starter_roster();
+    bool scored = false;
+    bool llm_called = false;
+    auto scorer = [&](const std::string&, const std::vector<LabelSpec>&) {
+        scored = true;
+        return peaked("research", 0.99, 0.99);
+    };
+    auto llm = [&](const std::string&) {
+        llm_called = true;
+        return std::string("<intent><kind>ops</kind><confidence>0.9</confidence>"
+                           "<agent>forge</agent><brief>x</brief></intent>");
+    };
+    auto hint = heuristic_classify(in);
+    CHECK(hint.kind == "multi");
+    auto out = resolve_intent(in, hybrid_cfg(), llm, scorer, 0.5);
+    CHECK_FALSE(scored);
+    CHECK(llm_called);
+    CHECK(out.source == "llm");
+    CHECK_FALSE(out.decision_consulted);
+}
+
+TEST_CASE("a confident cue never consults the scorer") {
+    IntentInput in;
+    in.text = "Look up primary sources on SPARC v9";
+    in.requested_agent = "index";
+    in.roster = starter_roster();
+    bool scored = false;
+    bool llm_called = false;
+    auto scorer = [&](const std::string&, const std::vector<LabelSpec>&) {
+        scored = true;
+        return peaked("write", 0.99, 0.99);
+    };
+    auto llm = [&](const std::string&) {
+        llm_called = true;
+        return std::string{};
+    };
+    auto out = resolve_intent(in, hybrid_cfg(), llm, scorer, 0.5);
+    CHECK_FALSE(scored);
+    CHECK_FALSE(llm_called);
+    CHECK(out.source == "heuristic");
+    CHECK(out.target_agent == "scout");
+}
+
+TEST_CASE("a zero margin leaves the scorer unconsulted") {
+    IntentInput in;
+    in.text = "Hello, how is the weather in the garden?";
+    in.requested_agent = "index";
+    in.roster = starter_roster();
+    bool scored = false;
+    auto scorer = [&](const std::string&, const std::vector<LabelSpec>&) {
+        scored = true;
+        return peaked("research", 0.99, 0.99);
+    };
+    auto out = resolve_intent(in, hybrid_cfg(), nullptr, scorer, 0.0);
+    CHECK_FALSE(scored);
+    CHECK(out.source == "heuristic");
+    CHECK(out.kind == "unknown");
+}
+
+TEST_CASE("heuristic mode does not consult the scorer") {
+    IntentInput in;
+    in.text = "Hello, how is the weather in the garden?";
+    in.requested_agent = "index";
+    in.roster = starter_roster();
+    bool scored = false;
+    auto scorer = [&](const std::string&, const std::vector<LabelSpec>&) {
+        scored = true;
+        return peaked("research", 0.99, 0.99);
+    };
+    IntentConfig cfg = hybrid_cfg();
+    cfg.mode = "heuristic";
+    auto out = resolve_intent(in, cfg, nullptr, scorer, 0.5);
+    CHECK_FALSE(scored);
+    CHECK(out.source == "heuristic");
+}
+
+TEST_CASE("a peaked kind with no roster agent falls through") {
+    IntentInput in;
+    in.text = "Hello, how is the weather in the garden?";
+    in.requested_agent = "index";
+    in.roster = {{"scout", "research-analyst", "Find facts", {"/search"}}};
+    bool llm_called = false;
+    auto scorer = [&](const std::string&, const std::vector<LabelSpec>&) {
+        return peaked("frontend", 0.97, 0.9);
+    };
+    auto llm = [&](const std::string&) {
+        llm_called = true;
+        return std::string("<intent><kind>research</kind><confidence>0.9</confidence>"
+                           "<agent>scout</agent><brief>x</brief></intent>");
+    };
+    auto out = resolve_intent(in, hybrid_cfg(), llm, scorer, 0.5);
+    CHECK(llm_called);
+    CHECK(out.source == "llm");
+    CHECK(out.target_agent == "scout");
+    CHECK(out.decision_consulted);
+}
+
+TEST_CASE("the scorer sees a clipped utterance") {
+    IntentInput in;
+    in.text = std::string(kIntentDecisionStateMaxBytes, 'a') + "TAIL";
+    in.requested_agent = "index";
+    in.roster = starter_roster();
+    auto scorer = [&](const std::string& state, const std::vector<LabelSpec>&) {
+        CHECK(state.size() <= kIntentDecisionStateMaxBytes);
+        CHECK(state.find("TAIL") == std::string::npos);
+        return peaked("unknown", 0.5, 0.1);
+    };
+    auto out = resolve_intent(in, hybrid_cfg(), nullptr, scorer, 0.5);
+    CHECK(out.decision_consulted);
+    CHECK(out.source == "heuristic");
+    CHECK(out.kind == "unknown");
+}

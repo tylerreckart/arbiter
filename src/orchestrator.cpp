@@ -101,6 +101,7 @@ Orchestrator::Orchestrator(std::map<std::string, std::string> api_keys)
         master.model = fallback;
     }
     index_master_ = std::make_unique<Agent>("index", master, client_);
+    decision_filter_ = decision_filter_from_env();
 }
 
 Agent& Orchestrator::create_agent(const std::string& id, Constitution config) {
@@ -738,15 +739,47 @@ std::string Orchestrator::collect_presence_notes(
         in.tool_summary = tool_summary;
 
         PresenceOutput out;
-        try {
-            out = run_presence_review(
-                client_, w.model, w.cfg.prompt, in,
-                [this, wid = w.id, model = w.model](const ApiResponse& resp) {
-                    if (cost_cb_) cost_cb_(wid, model, resp);
-                });
-        } catch (...) {
-            out.kind = PresenceOutput::Kind::Silent;
-            out.malformed = true;
+        bool filter_consulted = false;
+        std::string filter_action;
+        LabelDistribution filter_dist;
+        if (decision_filter_.enabled_for_presence()) {
+            filter_consulted = true;
+            filter_action = "fallthrough";
+            try {
+                LabelScoreCall scored = score_labels(
+                    client_, decision_filter_.model,
+                    presence_filter_state(original_task, tool_summary),
+                    presence_filter_labels());
+                filter_dist = scored.distribution;
+                if (scored.called && cost_cb_) {
+                    ApiResponse cost;
+                    cost.ok = scored.response_ok;
+                    cost.input_tokens = scored.input_tokens;
+                    cost.output_tokens = scored.output_tokens;
+                    cost.cache_read_tokens = scored.cache_read_tokens;
+                    cost.cache_creation_tokens = scored.cache_creation_tokens;
+                    cost_cb_(w.id, decision_filter_.model, cost);
+                }
+            } catch (...) {
+                filter_dist = {};
+            }
+            if (presence_filter_skips_review(
+                    filter_dist, decision_filter_.presence_silence_margin)) {
+                filter_action = "skip";
+                out.kind = PresenceOutput::Kind::Silent;
+            }
+        }
+        if (filter_action != "skip") {
+            try {
+                out = run_presence_review(
+                    client_, w.model, w.cfg.prompt, in,
+                    [this, wid = w.id, model = w.model](const ApiResponse& resp) {
+                        if (cost_cb_) cost_cb_(wid, model, resp);
+                    });
+            } catch (...) {
+                out.kind = PresenceOutput::Kind::Silent;
+                out.malformed = true;
+            }
         }
 
         if (presence_event_cb_) {
@@ -758,7 +791,14 @@ std::string Orchestrator::collect_presence_notes(
                           ? "context" : "silent";
             if (out.kind == PresenceOutput::Kind::Context && !out.text.empty())
                 ev.detail = out.text;
+            else if (filter_action == "skip")
+                ev.detail = "filter";
             ev.malformed = out.malformed;
+            ev.filter_consulted = filter_consulted;
+            ev.filter_action = filter_action;
+            ev.filter_peak = filter_dist.peak;
+            ev.filter_margin = filter_dist.margin;
+            ev.filter_label = filter_dist.argmax;
             presence_event_cb_(ev);
         }
 
@@ -903,8 +943,30 @@ Orchestrator::apply_intent_ingress(const std::string& agent_id,
         }
     }
 
+    LabelScorer scorer;
+    if (decision_filter_.enabled_for_intent() &&
+        (icfg.mode == "hybrid" || icfg.mode == "llm")) {
+        const std::string model = decision_filter_.model;
+        const std::string cost_id = result.agent_id;
+        scorer = [this, model, cost_id](const std::string& state,
+                                        const std::vector<LabelSpec>& specs) {
+            LabelScoreCall scored = score_labels(client_, model, state, specs);
+            if (scored.called && cost_cb_) {
+                ApiResponse cost;
+                cost.ok = scored.response_ok;
+                cost.input_tokens = scored.input_tokens;
+                cost.output_tokens = scored.output_tokens;
+                cost.cache_read_tokens = scored.cache_read_tokens;
+                cost.cache_creation_tokens = scored.cache_creation_tokens;
+                cost_cb_(cost_id, model, cost);
+            }
+            return scored.distribution;
+        };
+    }
+
     try {
-        result.intent = resolve_intent(in, icfg, llm);
+        result.intent = resolve_intent(
+            in, icfg, llm, scorer, decision_filter_.intent_route_margin);
     } catch (...) {
         return result;  // never break dispatch
     }

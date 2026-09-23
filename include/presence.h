@@ -25,6 +25,8 @@
 // envelope) is owned by the orchestrator.  Fail-open: transport or parse
 // errors become SILENT so a watcher never blocks the working agent.
 
+#include "label_score.h"
+
 #include <functional>
 #include <string>
 #include <vector>
@@ -108,6 +110,18 @@ PresenceOutput parse_presence_signal(const std::string& reply);
 // working agent's next user-role tool-result envelope.
 std::string format_presence_injection(const std::string& watcher_name,
                                       const std::string& note);
+
+// Reduced snapshot for the silence filter. First line of the task, capped
+// at 240 bytes, plus tool names only. Arguments and result bodies stay out.
+std::string presence_filter_state(const std::string& original_task,
+                                  const std::string& tool_summary);
+
+std::vector<LabelSpec> presence_filter_labels();
+
+// True only for an extreme "silent" label. A peaked "context" does not
+// skip the review — the filter cannot invent a note.
+bool presence_filter_skips_review(const LabelDistribution& d,
+                                  double margin_floor);
 
 // History-less review call.  Empty model or transport error → Silent
 // (fail-open).  on_response fires with the raw ApiResponse for cost

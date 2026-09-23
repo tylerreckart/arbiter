@@ -7,6 +7,15 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+- **Local label filter for presence silence and no-cue intent.**
+  With `ARBITER_DECISION_MODEL` set to an `ollama/…` id, a closed-set
+  next-token distribution can skip a presence review on an extreme
+  `silent`, or route a no-cue utterance without the advisor completion.
+  Both margins default to off. The filter cannot write a note, a brief
+  beyond the canned route line, or a halt. See
+  [Presence](docs/concepts/presence.md#silence-filter) and
+  [Intent](docs/concepts/intent.md#hybrid-classify).
+
 ## [0.13.11] — 2026-09-21
 
 - **Fleet dashboard pane (Phase C1).** The TUI consumes fleet SSE (`stream_id` +

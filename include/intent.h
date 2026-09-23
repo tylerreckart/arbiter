@@ -16,6 +16,8 @@
 // Distinct from Constitution::MemoryConfig::intent_routing, which only
 // boosts /mem search types.
 
+#include "label_score.h"
+
 #include <cstddef>
 #include <functional>
 #include <string>
@@ -65,13 +67,20 @@ struct Intent {
     // Closed taxonomy aligned with starter agents, plus multi/unknown.
     std::string kind;            // research|review|write|ops|frontend|backend|plan|market|social|multi|unknown
     double      confidence = 0;  // 0..1
-    std::string source;          // heuristic|llm|explicit|event|none
+    std::string source;          // heuristic|llm|decision|explicit|event|none
     std::string target_agent;    // empty = do not reroute
     std::string brief;
     std::vector<IntentSeedTodo>  todo_seeds;
     std::vector<IntentSeedPhase> plan_seeds;
     bool llm_used = false;
     bool malformed = false;
+    // Set when the local label scorer ran on a no-cue utterance. peak and
+    // margin are the renormalized distribution, even when the route was
+    // not taken and source stayed heuristic/llm.
+    bool decision_consulted = false;
+    double decision_peak = 0;
+    double decision_margin = 0;
+    std::string decision_label;
 };
 
 struct IntentInput {
@@ -105,11 +114,15 @@ bool intent_should_apply(const IntentConfig& cfg,
                          bool fresh_ingress = true);
 
 // Hybrid classify: explicit specialist short-circuits; heuristic when
-// confident; LLM when mode is hybrid/llm and heuristic is below threshold.
-// llm may be null — hybrid then degrades to heuristic-only.
+// confident; a peaked local label distribution when the heuristic found
+// no cue and `decision_margin` > 0; otherwise the LLM. llm and scorer
+// may be null — hybrid then degrades to heuristic-only. decision_margin
+// <= 0 leaves the scorer unconsulted.
 Intent resolve_intent(const IntentInput& in,
                       const IntentConfig& cfg,
-                      const IntentLlmFn& llm = nullptr);
+                      const IntentLlmFn& llm = nullptr,
+                      const LabelScorer& scorer = nullptr,
+                      double decision_margin = 0);
 
 // One-line (plus optional GOAL) preamble injected ahead of the user text.
 // Empty when there is nothing useful to show the executor.

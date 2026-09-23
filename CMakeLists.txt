@@ -195,6 +195,7 @@ set(ARBITER_SOURCES
     src/constitution.cpp
     src/orchestrator.cpp
     src/intent.cpp
+    src/label_score.cpp
     src/reconcile.cpp
     src/advisor_gate.cpp
     src/advisor.cpp
@@ -560,6 +561,7 @@ if(INDEX_BUILD_TESTS)
     add_executable(unit_api_client
         tests/test_api_client.cpp
         src/api_client.cpp
+        src/label_score.cpp
         src/circuit_breaker.cpp
         src/metrics.cpp
         src/json.cpp
@@ -582,6 +584,7 @@ if(INDEX_BUILD_TESTS)
     add_executable(unit_api_client_pool
         tests/test_api_client_pool.cpp
         src/api_client.cpp
+        src/label_score.cpp
         src/circuit_breaker.cpp
         src/metrics.cpp
         src/json.cpp
@@ -603,6 +606,7 @@ if(INDEX_BUILD_TESTS)
     add_executable(unit_api_client_pool_cancel
         tests/test_api_client_pool_cancel.cpp
         src/api_client.cpp
+        src/label_score.cpp
         src/circuit_breaker.cpp
         src/metrics.cpp
         src/json.cpp
@@ -846,6 +850,7 @@ if(INDEX_BUILD_TESTS)
         src/atomic_file.cpp
         src/json.cpp
         src/api_client.cpp
+        src/label_score.cpp
         src/circuit_breaker.cpp
         src/metrics.cpp
         src/tui/opentui/pane_input_editor.cpp
@@ -969,6 +974,7 @@ if(INDEX_BUILD_TESTS)
         src/workspace_root.cpp
         src/json.cpp
         src/api_client.cpp
+        src/label_score.cpp
         src/circuit_breaker.cpp
         src/metrics.cpp
         src/styled_text.cpp
@@ -1015,6 +1021,7 @@ if(INDEX_BUILD_TESTS)
         src/workspace_root.cpp
         src/json.cpp
         src/api_client.cpp
+        src/label_score.cpp
         src/circuit_breaker.cpp
         src/metrics.cpp
         src/styled_text.cpp
@@ -1048,6 +1055,7 @@ if(INDEX_BUILD_TESTS)
         src/workspace_root.cpp
         src/json.cpp
         src/api_client.cpp
+        src/label_score.cpp
         src/circuit_breaker.cpp
         src/metrics.cpp
         src/styled_text.cpp
@@ -1086,6 +1094,7 @@ if(INDEX_BUILD_TESTS)
         src/workspace_root.cpp
         src/json.cpp
         src/api_client.cpp
+        src/label_score.cpp
         src/circuit_breaker.cpp
         src/metrics.cpp
         src/styled_text.cpp
@@ -1390,6 +1399,7 @@ if(INDEX_BUILD_TESTS)
         src/event_routing.cpp
         src/constitution.cpp
         src/api_client.cpp
+        src/label_score.cpp
         src/circuit_breaker.cpp
         src/metrics.cpp
         src/json.cpp
@@ -1614,6 +1624,7 @@ if(INDEX_BUILD_TESTS)
         src/a2a/sse_reader.cpp
         src/constitution.cpp
         src/api_client.cpp
+        src/label_score.cpp
         src/circuit_breaker.cpp
         src/metrics.cpp
         src/json.cpp
@@ -1655,6 +1666,7 @@ if(INDEX_BUILD_TESTS)
         tests/test_constitution.cpp
         src/constitution.cpp
         src/api_client.cpp
+        src/label_score.cpp
         src/circuit_breaker.cpp
         src/metrics.cpp
         src/json.cpp
@@ -1680,6 +1692,7 @@ if(INDEX_BUILD_TESTS)
         src/model_context.cpp
         src/constitution.cpp
         src/api_client.cpp
+        src/label_score.cpp
         src/circuit_breaker.cpp
         src/metrics.cpp
         src/json.cpp
@@ -1707,6 +1720,7 @@ if(INDEX_BUILD_TESTS)
         src/model_context.cpp
         src/constitution.cpp
         src/api_client.cpp
+        src/label_score.cpp
         src/circuit_breaker.cpp
         src/metrics.cpp
         src/json.cpp
@@ -1731,6 +1745,7 @@ if(INDEX_BUILD_TESTS)
         src/model_catalog.cpp
         src/model_context.cpp
         src/api_client.cpp
+        src/label_score.cpp
         src/circuit_breaker.cpp
         src/metrics.cpp
         src/json.cpp
@@ -1772,6 +1787,7 @@ if(INDEX_BUILD_TESTS)
         src/advisor_gate.cpp
         src/advisor.cpp
         src/api_client.cpp
+        src/label_score.cpp
         src/circuit_breaker.cpp
         src/metrics.cpp
         src/json.cpp
@@ -1794,6 +1810,7 @@ if(INDEX_BUILD_TESTS)
         tests/test_presence.cpp
         src/presence.cpp
         src/api_client.cpp
+        src/label_score.cpp
         src/circuit_breaker.cpp
         src/metrics.cpp
         src/json.cpp
@@ -1815,12 +1832,27 @@ if(INDEX_BUILD_TESTS)
     add_executable(unit_intent
         tests/test_intent.cpp
         src/intent.cpp
+        src/label_score.cpp
+        src/json.cpp
     )
     target_include_directories(unit_intent PRIVATE
         ${CMAKE_SOURCE_DIR}/include
         ${CMAKE_SOURCE_DIR}/third_party/doctest
     )
     add_test(NAME unit_intent COMMAND unit_intent)
+
+    # Closed-set label distribution: renormalize, missing-label fail-open,
+    # OpenAI logprob body parse, margin floors. No provider client.
+    add_executable(unit_label_score
+        tests/test_label_score.cpp
+        src/label_score.cpp
+        src/json.cpp
+    )
+    target_include_directories(unit_label_score PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_label_score COMMAND unit_label_score)
 
     # Intent reconcile: admit, contract compile, observe ΔS, JIT ensure
     # waves, verification mandate, implement stub, snapshot rollback.

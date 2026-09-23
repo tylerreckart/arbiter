@@ -218,6 +218,14 @@ public:
         std::string kind;
         std::string detail;
         bool        malformed = false;
+        // Set when the local silence filter ran before the review call.
+        // filter_action is "skip" or "fallthrough". peak/margin/label are
+        // the renormalized distribution so a later pass can refit the floor.
+        bool        filter_consulted = false;
+        std::string filter_action;
+        double      filter_peak = 0;
+        double      filter_margin = 0;
+        std::string filter_label;
     };
     using PresenceEventCallback = std::function<void(const PresenceEvent&)>;
     void set_presence_event_callback(PresenceEventCallback cb) {
@@ -547,6 +555,7 @@ private:
     PresenceEventCallback presence_event_cb_;
     std::string         intent_source_hint_;
     std::string         ingress_channel_;
+    DecisionFilterConfig decision_filter_;
     HistoryCheckpointCallback history_checkpoint_cb_;
     std::atomic<int>    stream_counter_{-1};   // next_stream_id returns 0 first
     int                 next_stream_id();

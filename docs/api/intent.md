@@ -55,7 +55,8 @@ curl http://127.0.0.1:8080/v1/intent \
 | Field | Meaning |
 |-------|---------|
 | `kind` | Closed taxonomy: `research` \| `review` \| `write` \| `ops` \| `frontend` \| `backend` \| `plan` \| `market` \| `social` \| `multi` \| `unknown`. |
-| `source` | `heuristic` \| `llm` \| `explicit` \| `event` \| `none`. |
+| `source` | `heuristic` \| `llm` \| `decision` \| `explicit` \| `event` \| `none`. `decision` is a peaked local label distribution on a no-cue utterance. It carries the canned brief and no seeds. |
+| `decision_peak`, `decision_margin`, `decision_label` | Present when the local filter ran, including when it fell through to the LLM. Omitted when the filter is off or the heuristic already routed. |
 | `target_agent` | Suggested specialist, or `""` if index should handle it. |
 | `applied` | True when `apply_routing` would rewrite an `index` ingress to `target_agent` **and** that id is in the roster used for this request. This endpoint never dispatches. [`POST /v1/orchestrate`](orchestrate.md) additionally requires the agent to be loaded on the request orch (API: tenant catalog; TUI: `agents_dir`). |
 | `todo_seeds` / `plan_seeds` | Optional decomposition hints. Not persisted. |
