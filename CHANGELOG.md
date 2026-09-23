@@ -7,6 +7,15 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+- **Stale tool results stay out of the next prompt.** The model view
+  keeps the newest tool batch in full and replaces older bulky envelopes
+  with the writ line, an `ok` / `ERR:` status, and any presence note or
+  loop warning. Short results (under 4 KB) stay. Stored history and
+  replay are unchanged. Compaction also recognizes live `[END TOOL RESULTS]`
+  envelopes when choosing the kept tail, and the summarize call uses the
+  same digest so it does not re-send every file body. Disable with
+  `ARBITER_TOOL_ELIDE_DISABLED=1`. See [Sessions](docs/tui/sessions.md).
+
 ## [0.13.11] — 2026-09-21
 
 - **Fleet dashboard pane (Phase C1).** The TUI consumes fleet SSE (`stream_id` +

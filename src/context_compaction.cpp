@@ -29,9 +29,284 @@ CompactionConfig compaction_config_from_env() {
 
 bool is_tool_results_message(const Message& m) {
     if (m.role != "user") return false;
+    // Legacy fixtures and a few tests use this prefix. Live envelopes do
+    // not: execute_agent_commands starts at the writ block and only closes
+    // with the end marker, often after a presence or loop-warning prefix.
     static constexpr std::string_view kPrefix = "[TOOL RESULTS]";
-    return m.content.size() >= kPrefix.size() &&
-           m.content.compare(0, kPrefix.size(), kPrefix) == 0;
+    if (m.content.size() >= kPrefix.size() &&
+        m.content.compare(0, kPrefix.size(), kPrefix) == 0)
+        return true;
+    // Closing marker alone is not enough: a person can mention it. Live
+    // envelopes also contain a writ header (`[/read …]`, `/exec`, …).
+    if (m.content.find("[END TOOL RESULTS]") == std::string::npos) return false;
+    if (m.content.find("\n[/") != std::string::npos) return true;
+    return m.content.size() >= 2 && m.content[0] == '[' && m.content[1] == '/';
+}
+
+namespace {
+
+constexpr std::string_view kToolPrefix = "[TOOL RESULTS]";
+constexpr std::string_view kEndTool    = "[END TOOL RESULTS]";
+
+bool line_starts_with(std::string_view s, size_t i, std::string_view pfx) {
+    return i + pfx.size() <= s.size() &&
+           s.compare(i, pfx.size(), pfx) == 0;
+}
+
+size_t next_line(std::string_view s, size_t i) {
+    const auto n = s.find('\n', i);
+    return n == std::string_view::npos ? s.size() : n + 1;
+}
+
+bool is_ws_only(std::string_view s) {
+    for (char c : s) {
+        if (c != ' ' && c != '\t' && c != '\n' && c != '\r') return false;
+    }
+    return true;
+}
+
+bool at_line_start(std::string_view s, size_t i) {
+    return i == 0 || s[i - 1] == '\n';
+}
+
+void append_marked_block(std::string& out, std::string_view src,
+                         std::string_view begin, std::string_view end) {
+    size_t i = 0;
+    while (i < src.size()) {
+        const auto at = src.find(begin, i);
+        if (at == std::string_view::npos) return;
+        auto e = src.find(end, at + begin.size());
+        if (e == std::string_view::npos) return;
+        e += end.size();
+        while (e < src.size() && (src[e] == '\n' || src[e] == '\r')) ++e;
+        if (!out.empty() && out.back() != '\n') out.push_back('\n');
+        out.append(src.data() + at, e - at);
+        i = e;
+    }
+}
+
+void append_banner_lines(std::string& out, std::string_view src) {
+    for (size_t i = 0; i < src.size(); i = next_line(src, i)) {
+        if (!at_line_start(src, i)) continue;
+        if (!line_starts_with(src, i, "[TOOL RESULTS TRUNCATED") &&
+            !line_starts_with(src, i, "[TOOL RESULTS CANCELLED"))
+            continue;
+        const auto eol = src.find('\n', i);
+        const size_t end = eol == std::string_view::npos ? src.size() : eol;
+        if (!out.empty() && out.back() != '\n') out.push_back('\n');
+        out.append(src.data() + i, end - i);
+        out.push_back('\n');
+    }
+}
+
+size_t tool_payload_bytes(const Message& m) {
+    size_t n = m.content.size();
+    for (const auto& p : m.parts) {
+        if (p.kind == ContentPart::IMAGE)
+            n += p.image_data.size() + p.image_url.size();
+    }
+    return n;
+}
+
+bool tool_message_has_image(const Message& m) {
+    for (const auto& p : m.parts) {
+        if (p.kind == ContentPart::IMAGE &&
+            (!p.image_data.empty() || !p.image_url.empty()))
+            return true;
+    }
+    return false;
+}
+
+std::string clip_chars(std::string_view s, size_t max) {
+    while (!s.empty() &&
+           (s.back() == '\r' || s.back() == ' ' || s.back() == '\t'))
+        s.remove_suffix(1);
+    if (s.size() <= max) return std::string(s);
+    std::string out(s.substr(0, max));
+    out += "…";
+    return out;
+}
+
+std::string first_err_line(std::string_view body) {
+    // Runtime failures are their own line (`ERR: …`). A match inside a
+    // source line (`return ERR:`) is file text, not a failed writ.
+    size_t i = 0;
+    while (i < body.size()) {
+        const auto eol = body.find('\n', i);
+        const size_t end = eol == std::string_view::npos ? body.size() : eol;
+        std::string_view line = body.substr(i, end - i);
+        while (!line.empty() &&
+               (line.front() == ' ' || line.front() == '\t' || line.front() == '\r'))
+            line.remove_prefix(1);
+        if (line.size() >= 4 && line.compare(0, 4, "ERR:") == 0)
+            return clip_chars(line, 200);
+        i = end < body.size() ? end + 1 : body.size();
+    }
+    return {};
+}
+
+size_t trimmed_body_bytes(std::string_view body) {
+    while (!body.empty() && (body.back() == '\n' || body.back() == '\r'))
+        body.remove_suffix(1);
+    return body.size();
+}
+
+bool is_writ_boundary(std::string_view s, size_t i) {
+    return line_starts_with(s, i, "[/") ||
+           line_starts_with(s, i, "[END ") ||
+           line_starts_with(s, i, "[TOOL RESULTS") ||
+           line_starts_with(s, i, kEndTool);
+}
+
+// Decision-bearing prefix (presence note, loop warning). File bodies that
+// happen to sit before the first writ are not copied.
+std::string keep_tool_prefix(std::string_view prefix) {
+    std::string out;
+    if (prefix.size() <= 4096) {
+        size_t i = 0;
+        while (i < prefix.size()) {
+            const auto eol = prefix.find('\n', i);
+            const size_t end =
+                eol == std::string_view::npos ? prefix.size() : eol;
+            std::string_view line = prefix.substr(i, end - i);
+            if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+            const bool plain_header =
+                line == kToolPrefix ||
+                (line.size() > kToolPrefix.size() &&
+                 line.compare(0, kToolPrefix.size(), kToolPrefix) == 0 &&
+                 line.find("TRUNCATED") == std::string_view::npos &&
+                 line.find("CANCELLED") == std::string_view::npos &&
+                 line.find("omitted") == std::string_view::npos);
+            if (!plain_header) {
+                out.append(line);
+                out.push_back('\n');
+            }
+            i = end < prefix.size() ? end + 1 : prefix.size();
+        }
+        if (is_ws_only(out)) return {};
+        return out;
+    }
+    append_marked_block(out, prefix, "[PRESENCE:", "[END PRESENCE]");
+    append_marked_block(out, prefix, "[LOOP DETECTED]", "[END LOOP DETECTED]");
+    append_banner_lines(out, prefix);
+    return out;
+}
+
+std::string digest_tool_content(const Message& m) {
+    const std::string_view content = m.content;
+    size_t first_cmd = content.size();
+    for (size_t i = 0; i < content.size(); i = next_line(content, i)) {
+        if (at_line_start(content, i) && line_starts_with(content, i, "[/")) {
+            first_cmd = i;
+            break;
+        }
+    }
+
+    std::string out = keep_tool_prefix(content.substr(0, first_cmd));
+    if (!out.empty() && out.back() != '\n') out.push_back('\n');
+    out += "[TOOL RESULTS — earlier batch, bodies omitted]\n";
+
+    for (size_t i = first_cmd; i < content.size();) {
+        if (content[i] == '\n' || content[i] == '\r') {
+            ++i;
+            continue;
+        }
+        if (line_starts_with(content, i, kEndTool)) break;
+        if (line_starts_with(content, i, "[TOOL RESULTS TRUNCATED") ||
+            line_starts_with(content, i, "[TOOL RESULTS CANCELLED")) {
+            const auto eol = content.find('\n', i);
+            const size_t end =
+                eol == std::string_view::npos ? content.size() : eol;
+            out.append(content.data() + i, end - i);
+            out.push_back('\n');
+            i = end < content.size() ? end + 1 : content.size();
+            continue;
+        }
+        if (line_starts_with(content, i, kToolPrefix)) {
+            i = next_line(content, i);
+            continue;
+        }
+        if (!line_starts_with(content, i, "[/")) {
+            i = next_line(content, i);
+            continue;
+        }
+
+        const auto eol = content.find('\n', i);
+        const size_t header_end =
+            eol == std::string_view::npos ? content.size() : eol;
+        const std::string header =
+            clip_chars(content.substr(i, header_end - i), 240);
+        const size_t body_begin =
+            header_end < content.size() ? header_end + 1 : content.size();
+        size_t body_end = content.size();
+        for (size_t scan = body_begin; scan < content.size();
+             scan = next_line(content, scan)) {
+            if (at_line_start(content, scan) && is_writ_boundary(content, scan)) {
+                body_end = scan;
+                break;
+            }
+        }
+        const std::string err =
+            first_err_line(content.substr(body_begin, body_end - body_begin));
+        out += header;
+        if (!err.empty()) {
+            out.push_back(' ');
+            out += err;
+        } else {
+            out += " ok, ";
+            out += std::to_string(trimmed_body_bytes(
+                content.substr(body_begin, body_end - body_begin)));
+            out += " bytes omitted";
+        }
+        out.push_back('\n');
+        i = body_end;
+        if (i < content.size() && line_starts_with(content, i, "[END ") &&
+            !line_starts_with(content, i, kEndTool)) {
+            i = next_line(content, i);
+        }
+    }
+
+    for (const auto& p : m.parts) {
+        if (p.kind != ContentPart::IMAGE) continue;
+        if (p.image_data.empty() && p.image_url.empty()) continue;
+        out += "[image omitted — ";
+        out += p.media_type.empty() ? "image" : p.media_type;
+        out += ", ";
+        if (!p.image_url.empty() && p.image_data.empty())
+            out += "url";
+        else {
+            out += std::to_string(p.image_data.size());
+            out += " bytes";
+        }
+        out += "]\n";
+    }
+    out += "[END TOOL RESULTS]";
+    return out;
+}
+
+}  // namespace
+
+bool tool_result_elision_enabled() {
+    const char* env = std::getenv("ARBITER_TOOL_ELIDE_DISABLED");
+    if (!env || !*env || *env == '0') return true;
+    return false;
+}
+
+void elide_stale_tool_results(std::vector<Message>& messages, int keep_recent) {
+    if (keep_recent < 0) keep_recent = 0;
+    int trailing = 0;
+    for (size_t idx = messages.size(); idx-- > 0;) {
+        Message& m = messages[idx];
+        if (!is_tool_results_message(m)) continue;
+        if (trailing < keep_recent) {
+            ++trailing;
+            continue;
+        }
+        const bool image = tool_message_has_image(m);
+        if (!image && tool_payload_bytes(m) < kToolElideMinBytes) continue;
+        m.content = digest_tool_content(m);
+        m.parts.clear();
+    }
 }
 
 size_t compute_cut_index(const std::vector<Message>& history,
@@ -79,12 +354,22 @@ build_model_messages(const std::vector<Message>& history,
     const size_t start = std::min(s.covered_until, history.size());
     for (size_t i = start; i < history.size(); ++i)
         out.push_back(history[i]);
+    // Stored history stays intact for replay. Only this view drops bodies
+    // the model has already acted on.
+    if (tool_result_elision_enabled())
+        elide_stale_tool_results(out, kKeepRecentToolResults);
     return out;
 }
 
 size_t model_view_char_count(const std::vector<Message>& msgs) {
     size_t n = 0;
-    for (const auto& m : msgs) n += m.content.size();
+    for (const auto& m : msgs) {
+        n += m.content.size();
+        for (const auto& p : m.parts) {
+            if (p.kind == ContentPart::IMAGE)
+                n += p.image_data.size() + p.image_url.size();
+        }
+    }
     return n;
 }
 
@@ -294,7 +579,11 @@ std::string summarize_history_slice(
             "  - constraints, requirements, and user preferences\n"
             "  - unresolved questions and next steps\n"
             "Do not invent facts.  Prefer concrete names over vague "
-            "restatement.  Output plain prose (no markdown fences).\n\n";
+            "restatement.  Tool-result bodies from earlier batches may "
+            "already be omitted down to the writ line and an ok/ERR "
+            "status — do not reconstruct file contents that are not "
+            "written out in the assistant turns or those status lines.  "
+            "Output plain prose (no markdown fences).\n\n";
 
     if (!prior_summary.empty()) {
         body << "[PRIOR SUMMARY]\n" << prior_summary
@@ -305,8 +594,15 @@ std::string summarize_history_slice(
              << "\n[END PINNED FACTS]\n\n";
     }
 
+    std::vector<Message> slice = older_slice;
+    // The slice is already outside the live window, so every bulky tool
+    // body can be digested. Assistant turns stay verbatim — that is where
+    // the decisions are.
+    if (tool_result_elision_enabled())
+        elide_stale_tool_results(slice, 0);
+
     body << "[MESSAGES TO SUMMARIZE]\n";
-    for (const auto& m : older_slice) {
+    for (const auto& m : slice) {
         body << m.role << ": " << m.content << "\n---\n";
     }
     body << "[END MESSAGES]\n";
