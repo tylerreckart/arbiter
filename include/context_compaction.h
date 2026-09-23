@@ -48,6 +48,24 @@ CompactionConfig compaction_config_from_env();
 
 [[nodiscard]] bool is_tool_results_message(const Message& m);
 
+// Newest tool-result messages left verbatim in the model view. Older bulky
+// envelopes become a writ/status digest. The live view keeps one so the
+// model still sees the batch it is about to act on.
+inline constexpr int kKeepRecentToolResults = 1;
+
+// Short search hits and errors stay whole. File reads, maps, and long
+// command output are what blow the prompt up on the next turns.
+inline constexpr size_t kToolElideMinBytes = 4096;
+
+// ARBITER_TOOL_ELIDE_DISABLED set to anything other than empty or `0`
+// keeps every tool body in the model view and in the compaction prompt.
+[[nodiscard]] bool tool_result_elision_enabled();
+
+// Digest tool-result messages except the last `keep_recent` ones.
+// Non-tool messages are left alone. Image parts on a digested message
+// are dropped. Does not read the env flag — callers decide.
+void elide_stale_tool_results(std::vector<Message>& messages, int keep_recent);
+
 // Cut index so histories_[cut …] is the recent window (keep last N), snapped
 // so the kept tail starts on a real user turn when possible.
 [[nodiscard]] size_t compute_cut_index(const std::vector<Message>& history,

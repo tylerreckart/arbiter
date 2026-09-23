@@ -93,7 +93,19 @@ to force it. `/reset` clears both history and compaction state for that agent.
 
 The summary call uses `constitution.advisor.model` when set, otherwise the
 executor model. Failures are fail-open: the turn proceeds with the uncompacted
-view and a warning is logged.
+view and a warning is logged. The summarize prompt itself drops bulky tool
+bodies (same digest as below) so that call is not a second copy of every file
+the agent already read.
+
+Before each model request, tool-result envelopes older than the newest batch
+are replaced in that view with a short digest: the writ line (`[/read path]`,
+`/exec`, …), `ok, N bytes omitted` or the first `ERR:` line, plus any
+presence note or loop warning that was attached. The newest tool batch is
+sent in full, so the model still has the evidence for the turn it is about
+to take. File bodies under 4 KB stay as well — a short search hit is the
+signal, not the cost. Image bytes on an older tool turn are dropped with a
+one-line stand-in. Replay and session JSON keep the original envelopes.
+Set `ARBITER_TOOL_ELIDE_DISABLED=1` to send every body.
 
 ## Sessions vs the structured memory graph
 

@@ -45,6 +45,7 @@ See [`docs/cli/connect.md`](connect.md). Local provider keys (`OPENROUTER_API_KE
 | `ARBITER_AUTOSAVE_INTERVAL_SEC`  | Periodic dirty flush for conversation files. `0` disables the timer (post-turn and mid-turn `save_async` still run). | `30` |
 | `ARBITER_COMPACT_THRESHOLD`      | Integer percent (1–100) of the model context window that triggers auto-compaction. | `75` |
 | `ARBITER_COMPACT_DISABLED`       | When set to a non-empty, non-`0` value, disables automatic compaction. `/compact` still works. | unset |
+| `ARBITER_TOOL_ELIDE_DISABLED`    | When set to a non-empty, non-`0` value, the model view keeps every earlier tool-result body. By default only the newest batch is sent in full; older bulky bodies become a writ/status digest. | unset |
 
 See [`docs/tui/sessions.md`](../tui/sessions.md).
 

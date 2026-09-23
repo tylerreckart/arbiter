@@ -5,6 +5,7 @@
 #include "json.h"
 #include "model_context.h"
 
+#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -420,10 +421,145 @@ TEST_CASE("sanitize_compaction_state clears covered_until without summary") {
     CHECK(st.generation == 0);
 }
 
-TEST_CASE("is_tool_results_message detects prefix") {
+TEST_CASE("is_tool_results_message detects prefix and live envelopes") {
     CHECK(is_tool_results_message(Message{"user", "[TOOL RESULTS]\nok"}));
     CHECK_FALSE(is_tool_results_message(Message{"user", "hello"}));
     CHECK_FALSE(is_tool_results_message(Message{"assistant", "[TOOL RESULTS]"}));
+    CHECK(is_tool_results_message(Message{
+        "user", "\n[/read src/a.cpp]\nbody\n[END READ]\n[END TOOL RESULTS]"}));
+    CHECK_FALSE(is_tool_results_message(Message{
+        "user", "the closing marker is [END TOOL RESULTS], nothing else"}));
+    CHECK_FALSE(is_tool_results_message(Message{
+        "assistant", "\n[/read x]\n[END TOOL RESULTS]"}));
+}
+
+TEST_CASE("compute_cut_index skips a live tool envelope") {
+    const std::string envelope =
+        "\n[/read src/a.cpp]\nbody\n[END READ]\n[END TOOL RESULTS]";
+    std::vector<Message> hist = {
+        {"user", "start"},
+        {"assistant", "ok"},
+        {"user", envelope},
+        {"assistant", "done"},
+        {"user", "next"},
+        {"assistant", "y"},
+    };
+    CHECK(compute_cut_index(hist, 3) == 0);
+}
+
+static std::string live_tool_envelope(const std::string& writs_and_tail) {
+    return "\n[PRESENCE: Jules]\nport is 8080\n[END PRESENCE]\n\n" +
+           writs_and_tail + "[END TOOL RESULTS]";
+}
+
+TEST_CASE("stale tool bodies are digested; the newest batch stays") {
+    const std::string bulk(5000, 'Q');
+    const std::string old_tool = live_tool_envelope(
+        "[/read src/a.cpp]\nreturn ERR: not a failure\n" + bulk +
+        "\n[END READ]\n\n"
+        "[/exec npm test]\n" + bulk + "\nERR: exit status 1\n[END EXEC]\n\n"
+        "[TOOL RESULTS TRUNCATED: budget exhausted]\n\n");
+    const std::string fresh =
+        "\n[/read src/b.cpp]\n" + bulk + "\n[END READ]\n[END TOOL RESULTS]";
+    const std::string small =
+        "\n[/search arbiter]\nthree hits\n[END SEARCH]\n[END TOOL RESULTS]";
+
+    std::vector<Message> hist = {
+        {"user", "please read a"},
+        {"assistant", "reading"},
+        {"user", small},
+        {"assistant", "search noted"},
+        {"user", old_tool},
+        {"assistant", "I changed src/a.cpp"},
+        {"user", fresh},
+    };
+    const std::string old_copy = hist[4].content;
+
+    auto view = build_model_messages(hist, {});
+    REQUIRE(view.size() == hist.size());
+    CHECK(hist[4].content == old_copy);
+
+    CHECK(view[2].content == small);
+    CHECK(view[2].content.find("three hits") != std::string::npos);
+
+    const std::string& digested = view[4].content;
+    CHECK(digested.find(bulk) == std::string::npos);
+    CHECK(digested.find("[PRESENCE: Jules]") != std::string::npos);
+    CHECK(digested.find("port is 8080") != std::string::npos);
+    CHECK(digested.find("bodies omitted") != std::string::npos);
+    CHECK(digested.find("not a failure") == std::string::npos);
+    CHECK(digested.find("[/read src/a.cpp] ok, 5026 bytes omitted") !=
+          std::string::npos);
+    CHECK(digested.find("[/exec npm test] ERR: exit status 1") !=
+          std::string::npos);
+    CHECK(digested.find("[TOOL RESULTS TRUNCATED: budget exhausted]") !=
+          std::string::npos);
+    CHECK(digested.find("[END TOOL RESULTS]") != std::string::npos);
+    CHECK(digested.size() < 2000);
+
+    CHECK(view[6].content == fresh);
+    CHECK(view[6].content.find(bulk) != std::string::npos);
+}
+
+TEST_CASE("stale image tool results drop the bytes") {
+    Message oldm;
+    oldm.role = "user";
+    oldm.content = "\n[/read shot.png]\n[read as image]\n[END READ]\n"
+                   "[END TOOL RESULTS]";
+    ContentPart img;
+    img.kind = ContentPart::IMAGE;
+    img.media_type = "image/png";
+    img.image_data.assign(5000, 'A');
+    oldm.parts.push_back(img);
+
+    Message fresh = oldm;
+    fresh.content = "\n[/read other.png]\n[read as image]\n[END READ]\n"
+                    "[END TOOL RESULTS]";
+
+    std::vector<Message> hist = {
+        {"user", "look"},
+        {"assistant", "looking"},
+        oldm,
+        {"assistant", "red button"},
+        fresh,
+    };
+    auto view = build_model_messages(hist, {});
+    CHECK(view[2].parts.empty());
+    CHECK(view[2].content.find("image/png") != std::string::npos);
+    CHECK(view[2].content.find("5000 bytes") != std::string::npos);
+    CHECK(view[2].content.find(std::string(5000, 'A')) == std::string::npos);
+    REQUIRE(view[4].parts.size() == 1);
+    CHECK(view[4].parts[0].image_data.size() == 5000);
+    CHECK(hist[2].parts.size() == 1);
+    CHECK(hist[2].parts[0].image_data.size() == 5000);
+}
+
+TEST_CASE("tool elision can be disabled") {
+    const std::string bulk(5000, 'Q');
+    const std::string old_tool =
+        "\n[/read src/a.cpp]\n" + bulk + "\n[END READ]\n[END TOOL RESULTS]";
+    const std::string fresh =
+        "\n[/read src/b.cpp]\nok\n[END READ]\n[END TOOL RESULTS]";
+    std::vector<Message> hist = {
+        {"user", old_tool},
+        {"assistant", "done"},
+        {"user", fresh},
+    };
+    setenv("ARBITER_TOOL_ELIDE_DISABLED", "1", 1);
+    auto view = build_model_messages(hist, {});
+    unsetenv("ARBITER_TOOL_ELIDE_DISABLED");
+    CHECK(view[0].content.find(bulk) != std::string::npos);
+}
+
+TEST_CASE("model view counts image bytes") {
+    Message m;
+    m.role = "user";
+    m.content = "hi";
+    ContentPart img;
+    img.kind = ContentPart::IMAGE;
+    img.image_data.assign(100, 'B');
+    m.parts.push_back(std::move(img));
+    CHECK(model_view_char_count({m}) == 2 + 100);
 }
 
 TEST_CASE("context_window helpers match prior sidebar behavior") {
