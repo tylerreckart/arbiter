@@ -173,3 +173,38 @@ TEST_CASE("parse: note cap does not split trailing UTF-8") {
     const unsigned char last = static_cast<unsigned char>(out.text.back());
     CHECK((last & 0xC0) != 0x80);  // not a continuation byte
 }
+
+TEST_CASE("filter state keeps the first task line and tool names only") {
+    std::string task = "Ship the login form\npassword=hunter2 result=TOKENBODY";
+    std::string tools =
+        "- fetch args=https://secret.example result=TOKENBODY\n"
+        "- exec args=rm -rf result=boom\n";
+    auto state = presence_filter_state(task, tools);
+    CHECK(state.find("Ship the login form") != std::string::npos);
+    CHECK(state.find("fetch") != std::string::npos);
+    CHECK(state.find("exec") != std::string::npos);
+    CHECK(state.find("hunter2") == std::string::npos);
+    CHECK(state.find("TOKENBODY") == std::string::npos);
+    CHECK(state.find("secret.example") == std::string::npos);
+    CHECK(state.find("boom") == std::string::npos);
+}
+
+TEST_CASE("silence skip is only an extreme silent") {
+    LabelDistribution silent;
+    silent.ok = true;
+    silent.argmax = "silent";
+    silent.peak = 0.97;
+    silent.margin = 0.9;
+    CHECK(presence_filter_skips_review(silent, 0.5));
+
+    LabelDistribution context = silent;
+    context.argmax = "context";
+    CHECK_FALSE(presence_filter_skips_review(context, 0.5));
+
+    LabelDistribution flat = silent;
+    flat.peak = 0.55;
+    flat.margin = 0.1;
+    CHECK_FALSE(presence_filter_skips_review(flat, 0.5));
+
+    CHECK_FALSE(presence_filter_skips_review(silent, 0.0));
+}

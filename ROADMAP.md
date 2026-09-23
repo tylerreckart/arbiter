@@ -66,6 +66,7 @@ calendar commitments.
 - [ ] **Delegation policies-** Consitutions declare max depth, allowed callees, budget caps (tokens/$)
 - [ ] ~~**Workflow recipes-** Checked-in “crews” (JSON): ordered/parallel graphs of agents + shared todo board~~
 - [ ] **Advisor policy packs-** Reusable gate profiles (strict / coding / research)
+- [ ] **Decision-filter measurement-** Refit `ARBITER_PRESENCE_SILENCE_MARGIN` and `ARBITER_INTENT_ROUTE_MARGIN` from `filter_*` / `decision_*` traces. The advisor gate stays off this path until those floors exist.
 
 **Acceptance criteria:** 
 - [x] A user can watch and steer a 5-agent job.

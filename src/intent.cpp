@@ -466,9 +466,23 @@ bool intent_should_apply(const IntentConfig& cfg,
     return true;
 }
 
+namespace {
+
+void stamp_decision_trace(Intent& out, const Intent& trace) {
+    if (!trace.decision_consulted) return;
+    out.decision_consulted = true;
+    out.decision_peak = trace.decision_peak;
+    out.decision_margin = trace.decision_margin;
+    out.decision_label = trace.decision_label;
+}
+
+}  // namespace
+
 Intent resolve_intent(const IntentInput& in,
                       const IntentConfig& cfg,
-                      const IntentLlmFn& llm) {
+                      const IntentLlmFn& llm,
+                      const LabelScorer& scorer,
+                      double decision_margin) {
     Intent out;
     out.kind = "unknown";
     out.source = "none";
@@ -507,6 +521,40 @@ Intent resolve_intent(const IntentInput& in,
         return drop_unknown_agent(std::move(out), in.roster);
     }
 
+    // No cue hit. A peaked local distribution may route with the canned
+    // brief. Flat, unknown, or a kind with no roster agent falls through
+    // to the tagged completion, which is the only writer of seeds.
+    Intent trace;
+    if ((mode == "hybrid" || mode == "llm") && scorer &&
+        decision_margin > 0.0 && hint.kind == "unknown") {
+        LabelDistribution dist;
+        try {
+            std::string state = clip_utf8(in.text, kIntentDecisionStateMaxBytes);
+            dist = scorer(state, intent_decision_labels());
+        } catch (...) {
+            dist = {};
+        }
+        trace.decision_consulted = true;
+        trace.decision_peak = dist.peak;
+        trace.decision_margin = dist.margin;
+        trace.decision_label = dist.argmax;
+        if (label_distribution_is_extreme(dist, decision_margin) &&
+            dist.argmax != "unknown" && dist.argmax != "multi" &&
+            intent_kind_is_valid(dist.argmax)) {
+            std::string agent = match_roster_agent(in.roster, dist.argmax);
+            if (!agent.empty()) {
+                out.kind = dist.argmax;
+                out.target_agent = agent;
+                out.confidence = dist.peak;
+                out.source = "decision";
+                out.brief = default_brief(out.kind, out.target_agent);
+                out.llm_used = false;
+                stamp_decision_trace(out, trace);
+                return drop_unknown_agent(std::move(out), in.roster);
+            }
+        }
+    }
+
     if ((mode == "hybrid" || mode == "llm") && llm) {
         std::string reply = llm(build_llm_user_prompt(in, hint));
         if (reply.empty()) {
@@ -515,6 +563,7 @@ Intent resolve_intent(const IntentInput& in,
             out = hint;
             out.llm_used = true;
             if (in.source_hint == "event") out.source = "event";
+            stamp_decision_trace(out, trace);
             return drop_unknown_agent(std::move(out), in.roster);
         }
         out = parse_intent_signal(reply);
@@ -528,12 +577,14 @@ Intent resolve_intent(const IntentInput& in,
         if (in.source_hint == "event") out.source = "event";
         if (out.brief.empty())
             out.brief = default_brief(out.kind, out.target_agent);
+        stamp_decision_trace(out, trace);
         return out;
     }
 
     // hybrid/llm with no llm fn, or heuristic-only miss.
     out = hint;
     if (in.source_hint == "event") out.source = "event";
+    stamp_decision_trace(out, trace);
     return drop_unknown_agent(std::move(out), in.roster);
 }
 

@@ -232,4 +232,64 @@ PresenceOutput run_presence_review(
     return parse_presence_signal(resp.content);
 }
 
+std::string presence_filter_state(const std::string& original_task,
+                                  const std::string& tool_summary) {
+    std::string task;
+    for (char c : original_task) {
+        if (c == '\n' || c == '\r') break;
+        task.push_back(c);
+    }
+    task = clip_utf8(std::move(task), 240);
+
+    std::vector<std::string> names;
+    std::string line;
+    auto flush = [&](std::string current) {
+        if (names.size() >= 12) return;
+        size_t i = 0;
+        while (i < current.size() &&
+               std::isspace(static_cast<unsigned char>(current[i]))) ++i;
+        if (i >= current.size() || current[i] != '-') return;
+        ++i;
+        while (i < current.size() &&
+               std::isspace(static_cast<unsigned char>(current[i]))) ++i;
+        size_t b = i;
+        while (i < current.size() &&
+               !std::isspace(static_cast<unsigned char>(current[i]))) ++i;
+        if (i > b) names.emplace_back(current.substr(b, i - b));
+    };
+    for (char c : tool_summary) {
+        if (c == '\n') {
+            flush(std::move(line));
+            line.clear();
+        } else {
+            line.push_back(c);
+        }
+    }
+    if (!line.empty()) flush(std::move(line));
+
+    std::ostringstream ss;
+    ss << "Task: " << task << "\nTools:";
+    if (names.empty()) {
+        ss << " (none)";
+    } else {
+        for (const auto& name : names) ss << " " << name;
+    }
+    return ss.str();
+}
+
+std::vector<LabelSpec> presence_filter_labels() {
+    return {
+        {'S', "silent",
+         "Nothing here would change the working agent's next action."},
+        {'C', "context",
+         "A fact in this snapshot would save the working agent's next action."},
+    };
+}
+
+bool presence_filter_skips_review(const LabelDistribution& d,
+                                  double margin_floor) {
+    return label_distribution_is_extreme(d, margin_floor) &&
+           d.argmax == "silent";
+}
+
 } // namespace arbiter

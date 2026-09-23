@@ -132,6 +132,11 @@ struct ApiRequest {
     int max_tokens = 1024;
     double temperature = 0.3;
     bool include_temperature = true;
+    // Decision-filter only. Ollama's OpenAI-compatible endpoint. Left
+    // false on every generative call so older Ollama builds never see
+    // the fields.
+    bool logprobs = false;
+    int top_logprobs = 0;
 };
 
 struct ApiResponse {

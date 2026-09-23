@@ -67,6 +67,12 @@ The review is history-less — one snapshot in, one signal out — matching the 
 
 `SILENT` is the default. Surrounding prose is tolerated. Missing `<signal>`, an unknown token, or `CONTEXT` without `<note>` is **malformed Silent** (fail-open). Presence cannot `HALT` or `REDIRECT` — that remains the advisor's job.
 
+## Silence filter
+
+When `ARBITER_DECISION_MODEL` is an `ollama/…` id and `ARBITER_PRESENCE_SILENCE_MARGIN` is greater than 0, each checkpoint scores a short snapshot before `run_presence_review`. The snapshot is the first line of the task (240 bytes) plus tool names. Arguments, result bodies, recent assistant text, and watcher rules are not in it.
+
+The labels are `silent` and `context`. An extreme `silent` — peak at least 0.9 and margin at least the env floor — skips the review and emits `presence` with `kind=silent`, `detail=filter`, plus `filter_peak`, `filter_margin`, and `filter_label`. A peaked `context`, a flat distribution, a missing label, or a transport error still runs the review, which is the only place a note can be written. The filter cannot inject `[PRESENCE: …]`. The margin is a local gate to refit from those fields. It is not a calibrated probability. See [Environment](../cli/environment.md).
+
 ## Runtime control flow
 
 Where presence fires inside the dispatch loop:

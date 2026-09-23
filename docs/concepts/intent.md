@@ -19,9 +19,13 @@ The executor still speaks [writs](writ.md). Intent never becomes a writ.
 ```text
 explicit non-index agent  → source=explicit (no reroute)
 heuristic unique match    → source=heuristic, maybe reroute
+else if no cue and a local label distribution is peaked
+                          → source=decision, canned brief, no seeds
 else if mode=hybrid|llm   → one LLM call, tagged <intent> reply
 else                      → fall through to index
 ```
+
+The decision step is off unless `ARBITER_DECISION_MODEL` is an `ollama/…` id and `ARBITER_INTENT_ROUTE_MARGIN` is greater than 0. It runs only when the heuristic kind is `unknown` (no cue hit). A multi-cue result, a confident cue, and `mode=heuristic` never consult it. The model scores single-letter labels, including `unknown`, and the runtime renormalizes over those letters alone. A route is taken only when the peak is at least 0.9, the margin (peak minus the runner-up) clears the env floor, the winner is a real kind, and that kind maps to an agent on the roster. The brief is the canned `Route to <agent>` line. Todo and phase seeds still come only from the tagged completion, which runs for every other case. A missing label in the provider's top logprobs, a flat distribution, or a transport error leaves routing on the existing path. The margin is a local gate to refit from `decision_peak` / `decision_margin` / `decision_label` on the intent event. It is not a calibrated probability. See [Environment](../cli/environment.md).
 
 Closed `kind` values: `research`, `review`, `write`, `ops`, `frontend`, `backend`, `plan`, `market`, `social`, `multi`, `unknown`. They map onto the personal starter callsigns under `agents/*.json` (`scout`, `vera`, `quill`, `forge`, `loom`, `nexus`, `compass`, `beacon`, `echo`). `multi` means "needs decomposition"; seed slots may be filled.
 
