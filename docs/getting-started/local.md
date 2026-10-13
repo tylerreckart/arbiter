@@ -20,18 +20,22 @@ newest published release containing a compatible binary, and verifies its
 SHA-256 checksum:
 
 ```bash
-curl -fsSL https://arbiter.run/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/tylerreckart/arbiter/main/install.sh | sh
 ```
 
-Review the [installer source](https://github.com/tylerreckart/arbiter/blob/main/web/install.sh)
+Releases cut from this tree also upload that script as `install.sh`
+(`https://github.com/tylerreckart/arbiter/releases/download/<tag>/install.sh`).
+Releases published before the upload still install through the raw URL above.
+Review the [installer source](https://github.com/tylerreckart/arbiter/blob/main/install.sh)
 before running it if you prefer. Set `INSTALL_DIR` to install somewhere other
 than `/usr/local/bin`; the script uses `sudo` only when the target directory is
 not writable.
 
-Pin a specific release:
+Pin a specific binary release (the script still comes from the repository;
+`ARBITER_VERSION` selects the tarball):
 
 ```bash
-curl -fsSL https://arbiter.run/install.sh | ARBITER_VERSION=v0.13.11 sh
+curl -fsSL https://raw.githubusercontent.com/tylerreckart/arbiter/main/install.sh | ARBITER_VERSION=v0.13.11 sh
 ```
 
 ### From source

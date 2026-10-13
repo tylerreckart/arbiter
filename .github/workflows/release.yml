@@ -20,6 +20,7 @@ name: Build and publish release
 # as a stable URL in install scripts):
 #   arbiter-macos-arm64.tar.gz    (+ .sha256 sibling)
 #   arbiter-linux-x86_64.tar.gz   (+ .sha256)
+#   install.sh                    (same script as the repo-root installer)
 # Each tarball is flat: `arbiter` binary + `libopentui.*` + LICENSE +
 # README.md at the root.  OpenTUI is loaded via a same-directory RPATH
 # (@loader_path / $ORIGIN).
@@ -151,6 +152,10 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
@@ -178,8 +183,14 @@ jobs:
               --generate-notes
           fi
 
+          # install.sh is uploaded from the tagged tree. Older tags that
+          # predate the repo-root installer omit it instead of failing
+          # a binary re-publish.
+          assets=(artifacts/arbiter-*.tar.gz artifacts/arbiter-*.tar.gz.sha256)
+          if [ -f install.sh ]; then
+            assets+=(install.sh)
+          fi
           gh release upload "$TAG" \
             --repo "$REPO" \
             --clobber \
-            artifacts/arbiter-*.tar.gz \
-            artifacts/arbiter-*.tar.gz.sha256
+            "${assets[@]}"

@@ -58,7 +58,7 @@ calendar commitments.
 
 ### Phase 5 — Multi-agent mission control
 - [x] **Intent engine foundations-** Hybrid classify/route before dispatch (heuristic, then advisor-model LLM); seed slots for plans/todos; fail-open into index; `POST /v1/intent` + SSE `intent` event
-- [x] **Intent reconcile (Phase A)-** `POST /v1/reconcile`: compile `target_state` + invariants into a state contract, observe a bound workspace, require verification, optional snapshot rollback; `@arbiter/sdk` `IntentClient`; durable `reconcile_runs` + SSE
+- [x] **Intent reconcile (Phase A)-** `POST /v1/reconcile`: compile `target_state` + invariants into a state contract, observe a bound workspace, require verification, optional snapshot rollback; durable `reconcile_runs` + SSE
 - [x] **JIT ΔS waves (Phase B / #208)-** `mode=ensure` wave loop: resolve `agent_map` / clause.agent / capability fallback, spawn ephemeral clones for active ΔS only, re-observe as success proof, teardown before the next wave; budgets `max_waves` / `max_wall_ms` / `max_agents_per_wave` / `max_retries_per_clause`; SSE `agent.spawned` / `agent.teardown`. Observe mode and `/v1/orchestrate` unchanged
 - [x] **Always-on presence-** Constitution `presence.mode: always_on`; a pair colleague looks over a peer's shoulder after each tool batch and may inject `[PRESENCE: …]` context. Fail-open; cannot halt. SSE `presence` + TUI `◎ presence`. Opposite lifetime of JIT (#208).
 - [x] **Fleet dashboard pane-** Live tree of depth, agent, tools, tokens; click-to-focus / `Ctrl-w f` ([docs](docs/tui/fleet.md))

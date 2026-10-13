@@ -10,6 +10,14 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ### Fixed
 - **Per-request cancel no longer hard-cancels the shared client when a connection lease is refused.** `complete()` / `stream()` still abort a `ConnLease` when the thread's `CancelToken` is already cancelled, but that abort no longer sets `hard_cancelled_`. Esc or `/kill` in one pane was sticking the kill-switch for every other pane and `/loop` stream (#327). `cancel()` and a failing preflight stay sticky.
 
+### Removed
+- **TypeScript SDK.** `sdk/ts` (`@arbiter/sdk`) is no longer in this
+  repository. Intent classify and reconcile stay on `POST /v1/intent` and
+  `POST /v1/reconcile`.
+- **Website generator.** The Node + pug site under `web/` has moved out of
+  this repository. `install.sh` is at the repo root and is fetched from
+  GitHub raw (`main`) or attached to each GitHub Release.
+
 ## [0.13.11] — 2026-09-21
 
 - **Fleet dashboard pane (Phase C1).** The TUI consumes fleet SSE (`stream_id` +

@@ -114,7 +114,7 @@ non-starter for merging.
 Arbiter is pre-1.0 and treats a merge to `main` as a patch release
 (`0.12.2` → `0.12.3`). `main` requires pull requests, so `version.yml`
 opens a `chore/release-vX.Y.Z` PR (CMakeLists `INDEX_VERSION`,
-`CHANGELOG.md` `[Unreleased]` cut, site/docs pins) rather than
+`CHANGELOG.md` `[Unreleased]` cut, docs install pin) rather than
 pushing to `main`. Squash-merging that PR tags `vX.Y.Z` and
 dispatches the binary release.
 
