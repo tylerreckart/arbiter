@@ -60,7 +60,7 @@ begin_case() {
 
 make_fixture() {
   local cmake_ver="$1" tag_ver="${2:-}"
-  mkdir -p web/lib docs/getting-started
+  mkdir -p docs/getting-started
   cat >CMakeLists.txt <<EOF
 cmake_minimum_required(VERSION 3.20)
 project(arbiter VERSION ${cmake_ver} LANGUAGES CXX)
@@ -78,11 +78,8 @@ EOF
 
 Old notes.
 EOF
-  cat >web/lib/config.mjs <<'EOF'
-export const binaryRelease = 'v0.12.0'
-EOF
   cat >docs/getting-started/local.md <<'EOF'
-curl -fsSL https://arbiter.run/install.sh | ARBITER_VERSION=v0.12.0 sh
+curl -fsSL https://raw.githubusercontent.com/tylerreckart/arbiter/main/install.sh | ARBITER_VERSION=v0.12.0 sh
 EOF
   git init -q
   git config user.email test@example.com
@@ -108,7 +105,6 @@ assert_file_contains "cmake" CMakeLists.txt "project(arbiter VERSION 0.12.1"
 assert_file_contains "changelog heading" CHANGELOG.md "## [0.12.1] —"
 assert_file_contains "changelog kept body" CHANGELOG.md "- New thing."
 assert_file_contains "unreleased remains" CHANGELOG.md "## [Unreleased]"
-assert_file_contains "site pin" web/lib/config.mjs "v0.12.1"
 assert_file_contains "docs pin" docs/getting-started/local.md "ARBITER_VERSION=v0.12.1"
 
 begin_case "auto honors in-tree cmake ahead of tag"

@@ -7,9 +7,9 @@
     <br><br>
     <a href="#about">About</a>
     ·
-    <a href="https://arbiter.run/">Download</a>
+    <a href="https://github.com/tylerreckart/arbiter/releases/latest">Download</a>
     ·
-    <a href="https://arbiter.run/docs">Documentation</a>
+    <a href="docs/getting-started/local.md">Documentation</a>
     ·
     <a href="CONTRIBUTING.md">Contributing</a>
   </p>
@@ -37,21 +37,21 @@ One binary. Shared storage under `~/.arbiter/`. Provider keys (OpenRouter, Ollam
 ## Quick start
 
 ```bash
-curl -fsSL https://arbiter.run/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/tylerreckart/arbiter/main/install.sh | sh
 
 arbiter # local TUI
 ```
 
 Linux binaries, source builds, Ollama, `--send`, `--api`, and `--connect` are in
-[getting-started/local](https://arbiter.run/docs/getting-started/local/).
+[getting-started/local](docs/getting-started/local.md).
 
 ## Documentation
 
-- [`docs/getting-started`](https://arbiter.run/docs/getting-started/local) — first agent reply
-- [`docs/philosophy`](https://arbiter.run/docs/philosophy) — why Arbiter is shaped this way
-- [`docs/api/`](https://arbiter.run/docs/api) — HTTP API, tenants, SSE, MCP, A2A, memory
-- [`docs/cli/`](https://arbiter.run/docs/cli) — `--init`, `--send`, `--api`, `--connect`, env vars
-- [`docs/tui/`](https://arbiter.run/docs/tui) — panes, keybindings, themes, sessions
+- [`docs/getting-started`](docs/getting-started/local.md) — first agent reply
+- [`docs/philosophy`](docs/philosophy.md) — why Arbiter is shaped this way
+- [`docs/api/`](docs/api/index.md) — HTTP API, tenants, SSE, MCP, A2A, memory
+- [`docs/cli/`](docs/cli/index.md) — `--init`, `--send`, `--api`, `--connect`, env vars
+- [`docs/tui/`](docs/tui/index.md) — panes, keybindings, themes, sessions
 - [`ROADMAP.md`](ROADMAP.md) — phased plan toward 1.0 readiness
 - [`CHANGELOG.md`](CHANGELOG.md) · [`CONTRIBUTING.md`](CONTRIBUTING.md) · [`SECURITY.md`](SECURITY.md)
 
@@ -59,7 +59,7 @@ Linux binaries, source builds, Ollama, `--send`, `--api`, and `--connect` are in
 >
 > Arbiter is experimental software and has not reached a stable v1.0.
 > The event surface, agent constitutions, and HTTP shape are subject to
-> change. TUI `/exec` is [unsandboxed by default](https://arbiter.run/docs/concepts/sandbox/)
+> change. TUI `/exec` is [unsandboxed by default](docs/concepts/sandbox.md)
 > (confirm-gated host shell; set `ARBITER_SANDBOX_IMAGE` for Docker). 
 
 Licensed under the [Apache License 2.0](LICENSE).

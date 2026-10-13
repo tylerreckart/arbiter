@@ -126,4 +126,3 @@ Admit-time 400 bodies include `{ "error": "…", "code": "unknown_invariant" }` 
 - [Reconcile concept](../concepts/reconcile.md)
 - [`POST /v1/intent`](intent.md) — classify/route only
 - [`POST /v1/orchestrate`](orchestrate.md) — conversational implement path; feed it `brief` after an observe miss
-- [`@arbiter/sdk`](../../sdk/ts/README.md)

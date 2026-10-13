@@ -277,12 +277,6 @@ sub_one(
     required=False,
 )
 sub_one(
-    "web/lib/config.mjs",
-    r"(export const binaryRelease = ')v?[0-9]+\.[0-9]+\.[0-9]+(')",
-    rf"\g<1>{tag}\g<2>",
-    required=False,
-)
-sub_one(
     "docs/getting-started/local.md",
     r"(ARBITER_VERSION=)v?[0-9]+\.[0-9]+\.[0-9]+",
     rf"\g<1>{tag}",
@@ -342,10 +336,10 @@ if [ "$NO_COMMIT" -eq 1 ]; then
   exit 0
 fi
 
-if [ -z "$(git status --porcelain CMakeLists.txt CHANGELOG.md web/lib/config.mjs docs/getting-started/local.md 2>/dev/null || true)" ]; then
+if [ -z "$(git status --porcelain CMakeLists.txt CHANGELOG.md docs/getting-started/local.md 2>/dev/null || true)" ]; then
   echo "bump_version: tree already at ${NEXT}"
 else
-  git add CMakeLists.txt CHANGELOG.md web/lib/config.mjs docs/getting-started/local.md
+  git add CMakeLists.txt CHANGELOG.md docs/getting-started/local.md
   git commit -m "$(cat <<EOF
 chore(release): v${NEXT}
 

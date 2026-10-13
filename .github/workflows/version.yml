@@ -5,7 +5,7 @@ name: Version bump
 #
 # Feature merge (or workflow_dispatch):
 #   Open / update a `chore/release-vX.Y.Z` PR with the CMakeLists,
-#   changelog, and install-pin edits.  Enable auto-merge when the
+#   changelog, and docs install-pin edits.  Enable auto-merge when the
 #   repo allows it.  Do not tag yet — a squash merge rewrites the SHA.
 #
 # Release PR merged (`chore(release): vX.Y.Z` on main), or a feature
@@ -148,7 +148,7 @@ jobs:
               --base main \
               --head "$BRANCH" \
               --title "chore(release): v${VERSION}" \
-              --body "Cut CMakeLists, changelog, and install pins to v${VERSION}. Squash-merge and keep this title; the version workflow then tags v${VERSION} and publishes binaries. main requires pull requests, so the bot cannot push this commit directly.")"; then
+              --body "Cut CMakeLists, changelog, and the docs install pin to v${VERSION}. Squash-merge and keep this title; the version workflow then tags v${VERSION} and publishes binaries. main requires pull requests, so the bot cannot push this commit directly.")"; then
               echo "::error::Could not open the release PR. Enable Settings → Actions → General → 'Allow GitHub Actions to create and approve pull requests', then re-run. Branch ${BRANCH} is already pushed."
               exit 1
             fi

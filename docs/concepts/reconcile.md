@@ -130,7 +130,7 @@ Same SSE fabric as orchestrate. Persist + replay via `request_status` / `request
 | `reconcile.done` | Structured result (`status`, `contract`, `delta`, `evidence`, `waves`). |
 | `done` | Terminal aggregate (`ok` true only when `status=satisfied`). |
 
-TUI / `--send` do not call this path yet. Use [`POST /v1/reconcile`](../api/reconcile.md) or [`@arbiter/sdk`](../../sdk/ts/README.md).
+TUI / `--send` do not call this path yet. Use [`POST /v1/reconcile`](../api/reconcile.md).
 
 ## See also
 

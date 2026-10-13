@@ -3,14 +3,6 @@
 /build-*/
 .cache/
 compile_commands.json
-/web/dist/
-/web/dist/*
-/web/.build-dist/
-/web/.dev-dist/
-/web/node_modules/
-
-# SDK install leftovers
-/sdk/ts/node_modules/
 
 # Editor / IDE droppings
 .vscode/
