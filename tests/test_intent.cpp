@@ -299,6 +299,19 @@ TEST_CASE("preamble: index hint and specialist GOAL") {
     CHECK(spec.find("GOAL: Find primary sources.") != std::string::npos);
 }
 
+TEST_CASE("preamble still renders a luna guess with an unknown kind") {
+    Intent in;
+    in.kind = "unknown";
+    in.confidence = 0.2;
+    in.source = "luna_guess";
+    in.target_agent = "scout";
+    in.brief = "Route to scout";
+    auto spec = format_intent_preamble(in, true);
+    CHECK(spec.find("source=luna_guess") != std::string::npos);
+    CHECK(spec.find("agent=scout") != std::string::npos);
+    CHECK(spec.find("GOAL: Route to scout") != std::string::npos);
+}
+
 TEST_CASE("intent_should_apply requires index request + confidence + target") {
     Intent in;
     in.kind = "research";

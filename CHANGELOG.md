@@ -20,6 +20,7 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ### Added
 - **Luna logprob decision backend (prototype).** `decide(state, question, options)` with a swappable `DecisionBackend`. `LunaLogprobBackend` asks OpenRouter for `openai/gpt-6-luna` with reasoning off, one output token, and logprobs, then normalizes probabilities over the option labels. `ARBITER_INTENT_SHADOW=luna` logs that decision beside ingress classification and does not change routing. `arbiter-decision-smoke` is the live check; it refuses to invent a distribution when no API key is set. OpenRouter's catalogue does not currently advertise `logprobs` for this model.
+- **Tiered live intent router (default off).** `ARBITER_INTENT_LIVE=luna` routes depth-0 ingress with the heuristic first and, below that threshold, one Luna call that returns specialist and difficulty together. The call overlaps context loading, is bounded by `ARBITER_INTENT_LUNA_TIMEOUT_MS`, and is cached. Timeout or error uses the default agent instead of a generative classifier. Per-decision latency is logged as `intent_route`.
 
 ## [0.13.11] — 2026-09-21
 

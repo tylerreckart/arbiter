@@ -196,6 +196,7 @@ set(ARBITER_SOURCES
     src/orchestrator.cpp
     src/intent.cpp
     src/decision.cpp
+    src/intent_route.cpp
     src/reconcile.cpp
     src/advisor_gate.cpp
     src/advisor.cpp
@@ -1112,6 +1113,10 @@ if(INDEX_BUILD_TESTS)
         src/api_client.cpp
         src/circuit_breaker.cpp
         src/metrics.cpp
+        src/intent.cpp
+        src/intent_route.cpp
+        src/decision.cpp
+        src/logger.cpp
         src/styled_text.cpp
         src/theme.cpp
         src/tui/tui_design.cpp
@@ -1869,6 +1874,32 @@ if(INDEX_BUILD_TESTS)
         Threads::Threads
     )
     add_test(NAME unit_decision COMMAND unit_decision)
+
+    # Live intent router: heuristic tier, one Luna call, timeout, cache,
+    # and overlap with context loading. Mocked decide(); no network.
+    add_executable(unit_intent_route
+        tests/test_intent_route.cpp
+        src/intent.cpp
+        src/intent_route.cpp
+        src/decision.cpp
+        src/api_client.cpp
+        src/circuit_breaker.cpp
+        src/metrics.cpp
+        src/json.cpp
+        src/logger.cpp
+    )
+    target_include_directories(unit_intent_route PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}
+    )
+    target_link_libraries(unit_intent_route PRIVATE
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        CURL::libcurl
+        Threads::Threads
+    )
+    add_test(NAME unit_intent_route COMMAND unit_intent_route)
 
     # Intent reconcile: admit, contract compile, observe ΔS, JIT ensure
     # waves, verification mandate, implement stub, snapshot rollback.

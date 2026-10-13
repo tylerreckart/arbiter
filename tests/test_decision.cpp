@@ -132,6 +132,11 @@ TEST_CASE("prompt presents single-token labels, not agent ids, as the reply") {
     CHECK(prompt.find("Reply with exactly one option label.") != std::string::npos);
     CHECK(prompt.find(req.state) != std::string::npos);
     CHECK(prompt.find(req.question) != std::string::npos);
+    const auto options_at = prompt.find("Options:");
+    const auto state_at = prompt.find("State:");
+    CHECK(options_at != std::string::npos);
+    CHECK(state_at != std::string::npos);
+    CHECK(options_at < state_at);
 }
 
 TEST_CASE("default openai body does not grow logprobs or reasoning") {

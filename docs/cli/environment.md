@@ -37,8 +37,20 @@ See [`docs/cli/connect.md`](connect.md). Local provider keys (`OPENROUTER_API_KE
 | `ARBITER_CIRCUIT_COOLDOWN_SECONDS`  | Cooldown in Open before a half-open probe. Default `30` (clamped ≥0). |
 | `ARBITER_INTENT_LLM_RATE_PER_MIN` | Extra per-tenant token bucket for `POST /v1/intent` hybrid/llm classify. Default `20`. `0` disables. Independent of `ARBITER_TENANT_RATE_PER_MIN`. See [Operations → Per-tenant rate / concurrency limiting](../concepts/operations.md#per-tenant-rate--concurrency-limiting). |
 | `ARBITER_INTENT_LLM_RATE_BURST` | Burst for the intent LLM bucket. Default `5`. |
-| `ARBITER_INTENT_SHADOW` | When `luna` (also `on` / `true` / `1`), depth-0 intent classification also asks `openai/gpt-6-luna` for a logprob distribution over the loaded roster and logs `intent_shadow`. Routing is unchanged. Unset or `off` disables it. |
+| `ARBITER_INTENT_SHADOW` | When `luna` (also `on` / `true` / `1`), depth-0 intent classification also asks `openai/gpt-6-luna` for a logprob distribution over the loaded roster and logs `intent_shadow`. Routing is unchanged. Unset or `off` disables it. Skipped when live mode is on, so Luna is not called twice. |
 | `ARBITER_INTENT_SHADOW_MODEL` | OpenRouter model id for the shadow call. Default `openai/gpt-6-luna`. |
+| `ARBITER_INTENT_LIVE` | When `luna` (also `on` / `true` / `1`), depth-0 ingress uses the tiered router instead of the generative `<intent>` classifier. Default off. Tier 1 is `heuristic_classify` at `intent.min_confidence` (master default 0.8) and makes no model call. Below that, one Luna `decide()` asks for specialist and difficulty together. Timeout, error, or no label routes to `ARBITER_INTENT_DEFAULT_AGENT` and leaves redirection to the advisor. |
+| `ARBITER_INTENT_LUNA_MIN_CONFIDENCE` | Luna confidence at or above this value is tier `luna`. Below it the best guess is still used (`luna_guess`). Default `0.55`. Clamped to [0, 1]. |
+| `ARBITER_INTENT_LUNA_TIMEOUT_MS` | How long the router waits for that one Luna call. Default `400`. Clamped to ≥ 1. On expiry the call is cancelled and the default agent is used. |
+| `ARBITER_INTENT_STRONG_DIFFICULTY` | Difficulty at or above this selects the strong executor model. Default `0.5`. |
+| `ARBITER_INTENT_DEFAULT_DIFFICULTY` | Difficulty used when a successful Luna call has no cheap/strong labels. Default `0.5`. Heuristic and fallback turns keep the agent's own model. |
+| `ARBITER_INTENT_CACHE_TTL_MS` | LRU TTL for a normalized request plus roster. Default `60000`. `0` disables the cache. |
+| `ARBITER_INTENT_CACHE_ENTRIES` | LRU capacity. Default `64` (clamped ≥ 1). |
+| `ARBITER_INTENT_CACHE_KEY_CHARS` | Normalized request length kept in the cache key. Default `512`. |
+| `ARBITER_INTENT_DEFAULT_AGENT` | Agent used when Luna times out, errors, or returns no label. Default `index` (no reroute). |
+| `ARBITER_INTENT_LUNA_MODEL` | OpenRouter model id for the live call. Default `openai/gpt-6-luna`. |
+| `ARBITER_INTENT_CHEAP_MODEL` | Executor model when difficulty is below the strong cutoff. Empty uses the executing agent's `model`. |
+| `ARBITER_INTENT_STRONG_MODEL` | Executor model when difficulty is at or above the strong cutoff. Empty uses `advisor.model`, then the agent's `model`. |
 
 ## TUI session durability
 

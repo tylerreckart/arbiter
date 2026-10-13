@@ -2,7 +2,8 @@
 //
 // Classifies a few sample requests against the agent JSON files in agents/
 // (or the directory given as argv[1]). Prints choice, distribution,
-// confidence, latency, and cost. Does not invent results.
+// confidence, latency, and cost, then nearest-rank p50 and p95 over the
+// samples that were actually sent. Does not invent results.
 //
 //   OPENROUTER_API_KEY=sk-or-... ./arbiter-decision-smoke agents
 //
@@ -16,13 +17,16 @@
 #include "decision.h"
 #include "json.h"
 
+#include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -111,6 +115,17 @@ void print_result(const Sample& sample, const arbiter::DecisionResult& result) {
     std::cout << "\n";
 }
 
+// Nearest-rank percentile. rank = ceil(p * n), clamped to 1..n.
+double percentile_nearest_rank(std::vector<double> values, double p) {
+    if (values.empty()) return 0;
+    std::sort(values.begin(), values.end());
+    const double n = static_cast<double>(values.size());
+    double rank = std::ceil(p * n);
+    if (rank < 1.0) rank = 1.0;
+    if (rank > n) rank = n;
+    return values[static_cast<std::size_t>(rank) - 1];
+}
+
 std::vector<arbiter::IntentRosterEntry> load_agents(const fs::path& dir) {
     std::vector<arbiter::IntentRosterEntry> roster;
     if (!fs::is_directory(dir)) return roster;
@@ -189,12 +204,14 @@ int main(int argc, char** argv) {
 
     arbiter::LunaLogprobBackend backend(client);
     int failures = 0;
+    std::vector<double> latencies;
     for (const Sample& sample : kSamples) {
         arbiter::DecisionResult result = arbiter::decide(
             backend, sample.text,
             "Which specialist should handle this request?",
             options);
         print_result(sample, result);
+        latencies.push_back(result.latency_ms);
         if (!result.ok) {
             ++failures;
             if (logprobs_unsupported(result.error)) {
@@ -203,6 +220,13 @@ int main(int argc, char** argv) {
                 break;
             }
         }
+    }
+    if (!latencies.empty()) {
+        std::cout << "latency_ms samples: " << latencies.size() << "\n";
+        std::cout << "latency_ms p50: "
+                  << percentile_nearest_rank(latencies, 0.50) << "\n";
+        std::cout << "latency_ms p95: "
+                  << percentile_nearest_rank(latencies, 0.95) << "\n";
     }
     return failures == 0 ? 0 : 1;
 }

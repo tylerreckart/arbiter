@@ -87,6 +87,18 @@ Desired-end-state work (workspace + tests + rollback) is [`POST /v1/reconcile`](
 | TUI | Applied: info-tinted `↗ research · heuristic` (callsign suffix when the agent id differs from the kind, e.g. `scout`). Classified but not applied: warning-tinted `· intent research · hint:scout`. Quiet when `kind` is empty/`unknown`. Distinct from `·` system activity and from `→ delegating:`. |
 | Verbose API log | `--verbose` renders `intent` alongside `advisor` / `tool_call`. |
 
+## Live logprob router
+
+`ARBITER_INTENT_LIVE` defaults off. Set it to `luna` to replace the generative `<intent>` fallback on depth-0 ingress. Routing otherwise stays on the heuristic / hybrid / llm path above, including shadow mode.
+
+1. **Heuristic.** `heuristic_classify` runs first. A target whose confidence is at least `intent.min_confidence` (0.8 on the master constitution) is used immediately. No model call.
+2. **One Luna call.** Below that threshold the router calls `decide()` once. Options are joint labels (`scout|cheap`, `scout|strong`, …) so specialist and difficulty share a single output token. Difficulty is `P(strong) / (P(strong) + P(cheap))` and selects the cheap or strong executor model for that turn. A roster that does not fit in 20 labels is asked for the specialist only and uses `ARBITER_INTENT_DEFAULT_DIFFICULTY`.
+3. **No second classifier.** Confidence under `ARBITER_INTENT_LUNA_MIN_CONFIDENCE` (default 0.55) still routes to the best guess (`luna_guess`). A timeout (`ARBITER_INTENT_LUNA_TIMEOUT_MS`, default 400), a transport error, or no observed label routes to `ARBITER_INTENT_DEFAULT_AGENT` (default `index`, which does not reroute). The advisor redirects a wrong guess.
+
+The Luna call starts as soon as the request is in hand and overlaps lesson and todo loading for a speculative agent (the heuristic target, otherwise the default agent). If the final agent differs, that agent's context is loaded afterward. Successful decisions are cached (normalized text + roster, LRU, default 64 entries and 60s TTL). The option list and system prompt stay short and stable so the provider can cache the prefix; the request text is the suffix. The call uses the process OpenRouter connection pool.
+
+Each decision logs `intent_route` with `tier`, `cache_hit`, `luna_ms`, and `total_ms`. `arbiter-decision-smoke` prints nearest-rank p50 and p95 over the samples it actually sent.
+
 ## Shadow logprob classifier
 
 `ARBITER_INTENT_SHADOW=luna` runs a second classifier beside the one above and logs the result as `intent_shadow`. It does not change `kind`, `target_agent`, or routing.

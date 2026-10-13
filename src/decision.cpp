@@ -205,12 +205,11 @@ std::string luna_decision_system_prompt() {
 }
 
 std::string luna_decision_prompt(const DecisionRequest& request) {
+    // Options and the question are the stable prefix (same roster, same
+    // question) so a provider prompt cache can reuse them. The request
+    // text is the suffix and is the only part that changes per turn.
     std::ostringstream ss;
-    ss << "State:\n" << clip_utf8(request.state, 8192) << "\n\n";
-    ss << "Question:\n";
-    if (request.question.empty()) ss << "Which option is best?";
-    else ss << request.question;
-    ss << "\n\nOptions:\n";
+    ss << "Options:\n";
     for (const auto& opt : request.options) {
         ss << opt.label << ". " << opt.id;
         if (!opt.description.empty()) {
@@ -218,7 +217,11 @@ std::string luna_decision_prompt(const DecisionRequest& request) {
         }
         ss << "\n";
     }
-    ss << "\nReply with exactly one option label.";
+    ss << "\nQuestion:\n";
+    if (request.question.empty()) ss << "Which option is best?";
+    else ss << request.question;
+    ss << "\n\nState:\n" << clip_utf8(request.state, 8192);
+    ss << "\n\nReply with exactly one option label.";
     return ss.str();
 }
 
