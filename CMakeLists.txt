@@ -1154,6 +1154,8 @@ if(INDEX_BUILD_TESTS)
         src/metrics.cpp
         src/intent.cpp
         src/intent_route.cpp
+        src/embed_route.cpp
+        src/embed_onnx_stub.cpp
         src/decision.cpp
         src/logger.cpp
         src/styled_text.cpp

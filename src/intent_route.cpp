@@ -724,16 +724,27 @@ IntentRouteOutcome route_intent_live(const IntentInput& in,
     const auto deadline = luna_started + std::chrono::milliseconds(
         route_cfg.timeout_ms < 1 ? 1 : route_cfg.timeout_ms);
     bool ready = false;
+    DecisionResult result;
     {
         std::unique_lock<std::mutex> lock(state->mu);
-        if (state->done) {
-            ready = true;
-        } else {
+        if (!state->done) {
             const auto now = std::chrono::steady_clock::now();
             if (now < deadline) {
-                ready = state->cv.wait_for(lock, deadline - now, [&] { return state->done; });
+                // libstdc++ waits on steady_clock with pthread_cond_clockwait.
+                // GCC 11's ThreadSanitizer intercepts pthread_cond_timedwait
+                // and does not intercept pthread_cond_clockwait, so a
+                // steady_clock wait_for leaves mu looking locked when the
+                // worker acquires it. system_clock uses the intercepted wait.
+                const auto remaining = std::chrono::duration_cast<
+                    std::chrono::system_clock::duration>(deadline - now);
+                state->cv.wait_until(
+                    lock,
+                    std::chrono::system_clock::now() + remaining,
+                    [&] { return state->done; });
             }
         }
+        ready = state->done;
+        if (ready) result = state->result;
     }
 
     if (!ready) {
@@ -745,8 +756,6 @@ IntentRouteOutcome route_intent_live(const IntentInput& in,
         out.timings.luna_ms = luna_ms;
         return give_up(std::move(out), "luna timeout");
     }
-
-    DecisionResult result = state->result;
     if (worker.joinable()) worker.join();
     const double luna_ms = result.latency_ms > 0 ? result.latency_ms : elapsed_ms(luna_started);
 
