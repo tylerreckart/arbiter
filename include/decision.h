@@ -10,21 +10,27 @@
 //   • a structured-output classifier
 //   • the heuristic in src/intent.cpp
 //
-// Confidence is (p_max - 1/n) / (1 - 1/n), with n = options.size().
-// Probabilities are a softmax over the option labels that appeared in
-// logprobs.content[0].top_logprobs (plus the sampled token). Labels that
-// did not appear are reported as 0 and are not given invented mass.
+// Confidence is (p - 1/n) / (1 - 1/n). p is exp(logprob) of the winning
+// observed label — the token's own probability, not a softmax over the
+// labels the provider happened to return. n is options.size(), not the
+// number of labels observed. Unseen labels are unknown (nullopt), not 0.
+// A response that contains only the sampled token is therefore not
+// probability 1 or confidence 1 unless that token's logprob is 0.
 //
 // OpenRouter's catalogue entry for openai/gpt-6-luna (checked 2026-10-13)
-// does not list logprobs or top_logprobs. OpenAI's own API returns them
-// for Luna only when reasoning is off, and rejects them while reasoning
-// is on. The backend sends reasoning.effort=none plus logprobs anyway.
-// A rejection is an error result — never a fabricated distribution.
+// does not list logprobs or top_logprobs. A live call with reasoning off
+// does return logprobs, but only one top_logprobs entry no matter what
+// top_logprobs was requested. Sending provider.require_parameters=true
+// 404s, so the parameter is unofficial. OpenAI's own API returns logprobs
+// for Luna only when reasoning is off. The backend sends
+// reasoning.effort=none plus logprobs anyway. A rejection is an error
+// result — never a fabricated distribution.
 
 #include "api_client.h"
 #include "intent.h"
 
 #include <functional>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -55,17 +61,26 @@ struct DecisionResult {
     std::string backend;       // "luna-logprob"
     std::string choice;        // option id
     std::string choice_label;  // the label that won
-    double probability = 0;    // P(choice) after normalizing over options
-    // id → probability, in option order. Sums to 1 when ok. Unobserved
-    // labels contribute 0.
-    std::vector<std::pair<std::string, double>> distribution;
-    double confidence = 0;     // (p_max - 1/n) / (1 - 1/n), clamped to [0, 1]
+    // exp(logprob) of the chosen label. Not renormalized over the labels
+    // that appeared in this response.
+    double probability = 0;
+    // id → probability, in option order. nullopt = that label was not in
+    // the returned logprobs (unknown, not a measured zero). Known values
+    // are exp(logprob) and are not rescaled to sum to 1.
+    std::vector<std::pair<std::string, std::optional<double>>> distribution;
+    // decision_confidence(probability, options.size()): how far the raw
+    // token probability sits above a uniform draw over the full option
+    // set. A single observed label does not force this to 1.
+    double confidence = 0;
     double cost_usd = 0;
     bool cost_known = false;
     double latency_ms = 0;
     std::string model;            // served model when the provider named one
     std::string requested_model;
     std::string sampled_token;    // the one token the model actually wrote
+    // How many option labels appeared in the returned logprobs. This is
+    // not the top_logprobs value that was requested. OpenRouter's Luna
+    // route has been observed to return 1 here even when 20 were asked for.
     int labels_observed = 0;
     int top_logprobs = 0;         // value used on the call that produced this
     int attempts = 0;
@@ -90,10 +105,14 @@ std::string single_token_label(std::size_t index);
 bool is_single_token_label(const std::string& label);
 
 // n == 1 → 1. p_max below the uniform baseline → 0.
+// p_max is a raw probability (exp of a logprob, or a caller's direct
+// probability). It is not assumed to be a softmax over a subset.
 double decision_confidence(double p_max, std::size_t n);
 
-// Softmax over option labels found in the first generated token's
-// logprobs. ok is false when no option label was observed.
+// Map the first generated token's logprobs onto options.
+// Each observed label's probability is exp(logprob). Unseen labels are
+// nullopt. ok is false when no option label was observed. Confidence is
+// decision_confidence(probability, options.size()).
 DecisionResult classify_logprobs(const std::vector<DecisionOption>& options,
                                  const std::vector<TokenLogprobs>& content);
 

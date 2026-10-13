@@ -47,7 +47,7 @@ TEST_CASE("single-token labels are the first 20 letters") {
     CHECK_FALSE(is_single_token_label(""));
 }
 
-TEST_CASE("softmax normalizes over observed option labels only") {
+TEST_CASE("observed labels keep exp(logprob) and are not renormalized") {
     TokenLogprobs tok;
     tok.token = "A";
     tok.logprob = std::log(0.6);
@@ -63,15 +63,18 @@ TEST_CASE("softmax normalizes over observed option labels only") {
     CHECK(result.choice == "scout");
     CHECK(result.choice_label == "A");
     CHECK(result.probability == doctest::Approx(0.6));
-    CHECK(result.distribution[0].second == doctest::Approx(0.6));
-    CHECK(result.distribution[1].second == doctest::Approx(0.3));
-    CHECK(result.distribution[2].second == doctest::Approx(0.1));
+    REQUIRE(result.distribution[0].second);
+    REQUIRE(result.distribution[1].second);
+    REQUIRE(result.distribution[2].second);
+    CHECK(*result.distribution[0].second == doctest::Approx(0.6));
+    CHECK(*result.distribution[1].second == doctest::Approx(0.3));
+    CHECK(*result.distribution[2].second == doctest::Approx(0.1));
     CHECK(result.labels_observed == 3);
     CHECK(result.sampled_token == "A");
     CHECK(result.confidence == doctest::Approx(decision_confidence(0.6, 3)));
 }
 
-TEST_CASE("a missing label is zero and the others are renormalized") {
+TEST_CASE("a missing label is unknown and the others are not renormalized") {
     TokenLogprobs tok;
     tok.token = "A";
     tok.has_logprob = true;
@@ -81,12 +84,40 @@ TEST_CASE("a missing label is zero and the others are renormalized") {
     REQUIRE(result.ok);
     CHECK(result.labels_observed == 2);
     CHECK(result.distribution[0].first == "scout");
-    CHECK(result.distribution[0].second == doctest::Approx(0.6 / 0.9));
-    CHECK(result.distribution[1].second == doctest::Approx(0.3 / 0.9));
-    CHECK(result.distribution[2].second == doctest::Approx(0.0));
-    double sum = 0;
-    for (const auto& item : result.distribution) sum += item.second;
-    CHECK(sum == doctest::Approx(1.0));
+    REQUIRE(result.distribution[0].second);
+    REQUIRE(result.distribution[1].second);
+    CHECK(*result.distribution[0].second == doctest::Approx(0.6));
+    CHECK(*result.distribution[1].second == doctest::Approx(0.3));
+    CHECK_FALSE(result.distribution[2].second.has_value());
+    CHECK(result.probability == doctest::Approx(0.6));
+    CHECK(result.confidence == doctest::Approx(decision_confidence(0.6, 3)));
+    CHECK(result.confidence < 1.0);
+}
+
+TEST_CASE("a single returned logprob is not probability or confidence 1") {
+    // OpenRouter's Luna route returns one top_logprobs entry even when
+    // top_logprobs=20 was requested. Renormalizing that one label used
+    // to report probability 1 and confidence 1, so luna_min_confidence
+    // could not reject a weakly scored token.
+    TokenLogprobs tok;
+    tok.token = "A";
+    tok.has_logprob = true;
+    tok.logprob = std::log(0.4);
+    tok.top_logprobs = {{"A", std::log(0.4)}};
+    auto result = classify_logprobs(three(), {tok});
+    REQUIRE(result.ok);
+    CHECK(result.labels_observed == 1);
+    CHECK(result.choice == "scout");
+    CHECK(result.choice_label == "A");
+    CHECK(result.probability == doctest::Approx(0.4));
+    REQUIRE(result.distribution.size() == 3);
+    REQUIRE(result.distribution[0].second);
+    CHECK(*result.distribution[0].second == doctest::Approx(0.4));
+    CHECK_FALSE(result.distribution[1].second.has_value());
+    CHECK_FALSE(result.distribution[2].second.has_value());
+    CHECK(result.confidence == doctest::Approx(decision_confidence(0.4, 3)));
+    CHECK(result.confidence < 0.55);
+    CHECK(result.confidence < 1.0);
 }
 
 TEST_CASE("duplicate tokens keep the higher logprob") {
@@ -98,8 +129,10 @@ TEST_CASE("duplicate tokens keep the higher logprob") {
     auto options = std::vector<DecisionOption>{opt("scout", "A"), opt("vera", "B")};
     auto result = classify_logprobs(options, {tok});
     REQUIRE(result.ok);
-    CHECK(result.probability == doctest::Approx(0.5));
+    CHECK(result.probability == doctest::Approx(std::exp(-0.2)));
     CHECK(result.choice == "scout");
+    REQUIRE(result.distribution[1].second);
+    CHECK(*result.distribution[1].second == doctest::Approx(std::exp(-0.2)));
 }
 
 TEST_CASE("no matching label is an error with an empty distribution") {
@@ -387,8 +420,12 @@ TEST_CASE("top_logprobs rejection retries once at 1") {
     CHECK(result.top_logprobs == 1);
     CHECK(result.attempts == 2);
     CHECK(result.labels_observed == 1);
-    CHECK(result.distribution[0].second == doctest::Approx(0.0));
-    CHECK(result.distribution[1].second == doctest::Approx(1.0));
+    CHECK_FALSE(result.distribution[0].second.has_value());
+    REQUIRE(result.distribution[1].second);
+    CHECK(*result.distribution[1].second == doctest::Approx(std::exp(-0.01)));
+    CHECK(result.probability == doctest::Approx(std::exp(-0.01)));
+    CHECK(result.confidence == doctest::Approx(decision_confidence(std::exp(-0.01), 3)));
+    CHECK_FALSE(result.distribution[2].second.has_value());
     CHECK(result.cost_known);
     CHECK(result.cost_usd == doctest::Approx(0.000003));
     CHECK(result.note.find("top_logprobs=1") != std::string::npos);

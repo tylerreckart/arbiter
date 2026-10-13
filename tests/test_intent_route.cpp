@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <thread>
 
@@ -161,6 +162,35 @@ TEST_CASE("low confidence still routes to the luna guess") {
     CHECK(out.intent.confidence < route_cfg().luna_min_confidence);
     CHECK(intent_route_should_apply(hybrid(), out.intent, "index"));
     CHECK(out.timings.model_tier == "cheap");
+}
+
+TEST_CASE("one observed logprob does not become a confident route") {
+    IntentRouteCache cache;
+    auto out = route_intent_live(
+        input("hello there"), hybrid(), route_cfg(), cache,
+        [&](const DecisionRequest&, const std::atomic<bool>&) {
+            TokenLogprobs tok;
+            tok.token = "A";
+            tok.has_logprob = true;
+            tok.logprob = std::log(0.42);
+            tok.top_logprobs = {{"A", std::log(0.42)}};
+            std::vector<DecisionOption> opts(4);
+            opts[0].id = "scout|cheap";
+            opts[0].label = "A";
+            opts[1].id = "scout|strong";
+            opts[1].label = "B";
+            opts[2].id = "vera|cheap";
+            opts[2].label = "C";
+            opts[3].id = "vera|strong";
+            opts[3].label = "D";
+            return classify_logprobs(opts, {tok});
+        });
+    CHECK(out.timings.tier == "luna_guess");
+    CHECK(out.intent.source == "luna_guess");
+    CHECK(out.intent.target_agent == "scout");
+    CHECK(out.intent.confidence == doctest::Approx(decision_confidence(0.42, 2)));
+    CHECK(out.intent.confidence < route_cfg().luna_min_confidence);
+    CHECK_FALSE(out.timings.difficulty_known);
 }
 
 TEST_CASE("luna error falls back and is not cached") {

@@ -65,8 +65,11 @@ std::string format_distribution(const DecisionResult& result) {
     std::ostringstream ss;
     for (size_t i = 0; i < result.distribution.size(); ++i) {
         if (i) ss << ',';
-        ss << result.distribution[i].first << '='
-           << fmt_num(result.distribution[i].second);
+        ss << result.distribution[i].first << '=';
+        if (result.distribution[i].second)
+            ss << fmt_num(*result.distribution[i].second);
+        else
+            ss << "unknown";
     }
     return ss.str();
 }
@@ -160,40 +163,36 @@ DecisionResult classify_logprobs(const std::vector<DecisionOption>& options,
         return result;
     }
 
-    double m = 0;
-    bool have_m = false;
-    for (size_t i = 0; i < options.size(); ++i) {
-        if (!seen[i]) continue;
-        if (!have_m || best[i] > m) {
-            m = best[i];
-            have_m = true;
-        }
-    }
-    double sum = 0;
-    for (size_t i = 0; i < options.size(); ++i) {
-        if (!seen[i]) continue;
-        sum += std::exp(best[i] - m);
-    }
-    if (!(sum > 0) || !std::isfinite(sum)) {
-        result.error = "logprobs could not be normalized";
-        return result;
-    }
-
+    // Raw exp(logprob). Do not softmax over the labels that happened to
+    // be returned: a provider that sends only the sampled token would
+    // otherwise report probability 1 and confidence 1.
     result.distribution.reserve(options.size());
     size_t winner = 0;
     bool have_winner = false;
     for (size_t i = 0; i < options.size(); ++i) {
-        double p = 0;
-        if (seen[i]) p = std::exp(best[i] - m) / sum;
+        std::optional<double> p;
+        if (seen[i]) {
+            p = std::exp(best[i]);
+            if (!p || !std::isfinite(*p)) {
+                result.error = "logprob could not be converted to a probability";
+                result.distribution.clear();
+                return result;
+            }
+        }
         result.distribution.emplace_back(options[i].id, p);
-        if (!have_winner || p > result.distribution[winner].second) {
+        if (p && (!have_winner || *p > *result.distribution[winner].second)) {
             winner = i;
             have_winner = true;
         }
     }
+    if (!have_winner || !result.distribution[winner].second) {
+        result.error = "logprob could not be converted to a probability";
+        result.distribution.clear();
+        return result;
+    }
     result.choice = options[winner].id;
     result.choice_label = options[winner].label;
-    result.probability = result.distribution[winner].second;
+    result.probability = *result.distribution[winner].second;
     result.confidence = decision_confidence(result.probability, options.size());
     result.ok = true;
     return result;
@@ -328,7 +327,8 @@ DecisionResult LunaLogprobBackend::decide(const DecisionRequest& request) {
         classified.ok) {
         std::string coverage = "observed " + std::to_string(classified.labels_observed) +
                                " of " + std::to_string(request.options.size()) +
-                               " option labels in top_logprobs";
+                               " option labels; probabilities are exp(logprob), "
+                               "unseen labels are unknown";
         if (!classified.note.empty()) classified.note += "; ";
         classified.note += coverage;
     }

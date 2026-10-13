@@ -59,6 +59,12 @@ struct IntentRouteConfig {
     // Used when a successful call has no cheap/strong labels (roster wider
     // than the single-token budget). Not used for heuristic or fallback.
     double default_difficulty = 0.5;
+    // Placeholder, not a measured Luna latency. A 2026-10-13 live smoke
+    // (reasoning off, one token) was p50 1359 ms / p95 1564 ms over 4
+    // calls; one-off curls were 4-5 s. At 400 ms nearly every live call
+    // times out and falls back. Tune ARBITER_INTENT_LUNA_TIMEOUT_MS from
+    // your own measurements before enabling live mode. Do not treat this
+    // default as that measurement.
     int timeout_ms = 400;
     int cache_ttl_ms = 60000;     // 0 disables the cache
     int cache_entries = 64;

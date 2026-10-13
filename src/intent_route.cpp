@@ -179,24 +179,33 @@ Marginal marginalize(const DecisionResult& result) {
     double cheap_all = 0;
     double strong_all = 0;
     bool any_band = false;
-    for (const auto& [id, p] : result.distribution) {
+    bool saw_cheap = false;
+    bool saw_strong = false;
+    for (const auto& [id, maybe_p] : result.distribution) {
         std::string agent;
         std::string band;
-        if (split_band(id, agent, band)) {
-            any_band = true;
-            if (band == "cheap") {
-                mass[agent].cheap += p;
-                cheap_all += p;
-            } else {
-                mass[agent].strong += p;
-                strong_all += p;
-            }
-        } else {
-            agent = id;
-        }
+        const bool joint = split_band(id, agent, band);
+        if (joint) any_band = true;
+        else agent = id;
         if (agent.empty()) continue;
         if (std::find(order.begin(), order.end(), agent) == order.end())
             order.push_back(agent);
+        // Unknown labels are not zeros. They stay out of the mass so a
+        // single returned logprob is not renormalized to 1, and a missing
+        // band is not treated as probability 0 when scoring difficulty.
+        if (!maybe_p || !std::isfinite(*maybe_p)) continue;
+        const double p = *maybe_p;
+        if (joint) {
+            if (band == "cheap") {
+                mass[agent].cheap += p;
+                cheap_all += p;
+                saw_cheap = true;
+            } else {
+                mass[agent].strong += p;
+                strong_all += p;
+                saw_strong = true;
+            }
+        }
         mass[agent].total += p;
     }
     double best_p = -1;
@@ -211,7 +220,7 @@ Marginal marginalize(const DecisionResult& result) {
     out.n_agents = order.size();
     if (out.agent.empty() || out.n_agents == 0) return out;
     out.confidence = decision_confidence(out.probability, out.n_agents);
-    if (any_band) {
+    if (any_band && saw_cheap && saw_strong) {
         double denom = strong_all + cheap_all;
         if (denom > 0) {
             out.difficulty = strong_all / denom;

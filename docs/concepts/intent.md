@@ -93,7 +93,7 @@ Desired-end-state work (workspace + tests + rollback) is [`POST /v1/reconcile`](
 
 1. **Heuristic.** `heuristic_classify` runs first. A target whose confidence is at least `intent.min_confidence` (0.8 on the master constitution) is used immediately. No model call.
 2. **One Luna call.** Below that threshold the router calls `decide()` once. Options are joint labels (`scout|cheap`, `scout|strong`, …) so specialist and difficulty share a single output token. Difficulty is `P(strong) / (P(strong) + P(cheap))` and selects the cheap or strong executor model for that turn. A roster that does not fit in 20 labels is asked for the specialist only and uses `ARBITER_INTENT_DEFAULT_DIFFICULTY`.
-3. **No second classifier.** Confidence under `ARBITER_INTENT_LUNA_MIN_CONFIDENCE` (default 0.55) still routes to the best guess (`luna_guess`). A timeout (`ARBITER_INTENT_LUNA_TIMEOUT_MS`, default 400), a transport error, or no observed label routes to `ARBITER_INTENT_DEFAULT_AGENT` (default `index`, which does not reroute). The advisor redirects a wrong guess.
+3. **No second classifier.** Confidence under `ARBITER_INTENT_LUNA_MIN_CONFIDENCE` (default 0.55) still routes to the best guess (`luna_guess`). A timeout (`ARBITER_INTENT_LUNA_TIMEOUT_MS`), a transport error, or no observed label routes to `ARBITER_INTENT_DEFAULT_AGENT` (default `index`, which does not reroute). The advisor redirects a wrong guess. The timeout default is **400 ms and needs tuning** before live mode is useful. It is not a measured latency. A live check on 2026-10-13 was p50 1359 ms and p95 1564 ms over 4 calls; one-off curls took 4-5 s. At 400 ms nearly every Luna call would fall back.
 
 The Luna call starts as soon as the request is in hand and overlaps lesson and todo loading for a speculative agent (the heuristic target, otherwise the default agent). If the final agent differs, that agent's context is loaded afterward. Successful decisions are cached (normalized text + roster, LRU, default 64 entries and 60s TTL). The option list and system prompt stay short and stable so the provider can cache the prefix; the request text is the suffix. The call uses the process OpenRouter connection pool.
 
@@ -103,7 +103,9 @@ Each decision logs `intent_route` with `tier`, `cache_hit`, `luna_ms`, and `tota
 
 `ARBITER_INTENT_SHADOW=luna` runs a second classifier beside the one above and logs the result as `intent_shadow`. It does not change `kind`, `target_agent`, or routing.
 
-The shadow backend is `LunaLogprobBackend`: options are single-letter labels, the request asks OpenRouter for `openai/gpt-6-luna` with reasoning effort `none`, one output token, and `logprobs` / `top_logprobs`. Confidence is `(p_max - 1/n) / (1 - 1/n)`. As of 2026-10-13, OpenRouter's model catalogue does not list `logprobs` for this id; a rejection is logged and the heuristic/LLM decision stands.
+The shadow backend is `LunaLogprobBackend`: options are single-letter labels, the request asks OpenRouter for `openai/gpt-6-luna` with reasoning effort `none`, one output token, and `logprobs` / `top_logprobs`. Each observed label's probability is `exp(logprob)` of that token. Labels the response did not include are unknown, not zero. Confidence is `(p - 1/n) / (1 - 1/n)` with `p` that raw probability and `n` the full option count, so one returned label is not confidence 1 unless the token's own probability is 1. `labels_observed` is how many option labels were actually in the logprobs.
+
+As of 2026-10-13, OpenRouter's catalogue does not list `logprobs` for this id. A live call with reasoning off does return them, but only one `top_logprobs` entry regardless of `top_logprobs=20`. `provider.require_parameters=true` 404s, so the feature is unofficial. A rejection is logged and the heuristic/LLM decision stands.
 
 `arbiter-decision-smoke` runs the same backend against `agents/*.json` when `OPENROUTER_API_KEY` is set. Without a key it exits without calling the model.
 

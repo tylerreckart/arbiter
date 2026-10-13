@@ -111,7 +111,9 @@ void print_result(const Sample& sample, const arbiter::DecisionResult& result) {
         std::cout << "  (none)\n";
     } else {
         for (const auto& [id, p] : result.distribution) {
-            std::cout << "  " << id << " " << p << "\n";
+            std::cout << "  " << id << " ";
+            if (p) std::cout << *p << "\n";
+            else std::cout << "unknown\n";
         }
     }
     std::cout << "\n";
