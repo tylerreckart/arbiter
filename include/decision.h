@@ -48,6 +48,9 @@ struct DecisionOption {
     std::string id;           // stable id callers switch on ("scout")
     std::string label;        // single ASCII alphanumeric token ("A")
     std::string description;  // shown to the model; not used as the label
+    // Embedding router only. Luna ignores these. Each one is embedded
+    // beside `description` and averaged into the option centroid.
+    std::vector<std::string> examples;
 };
 
 struct DecisionRequest {

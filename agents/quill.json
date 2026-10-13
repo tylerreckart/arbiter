@@ -36,5 +36,10 @@
     "/todo",
     "/lesson",
     "/mcp"
+  ],
+  "routing_examples": [
+    "Write the README for this library",
+    "Draft the essay from these notes",
+    "Turn the outline into prose"
   ]
 }

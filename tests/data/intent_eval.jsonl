@@ -1,0 +1,59 @@
+{"text": "Pull the original NIST document on password hashing and quote the relevant section with a link.", "agent": "scout"}
+{"text": "I need a sourced timeline of the Voyager golden record, primary references only.", "agent": "scout"}
+{"text": "Who first measured the charge of the electron, and which paper should I cite?", "agent": "scout"}
+{"text": "Compare the two SEC filings and tell me which numbers are actually in the exhibits.", "agent": "scout"}
+{"text": "Find the upstream changelog that introduced this flag and link the commit message.", "agent": "scout"}
+{"text": "What did the court opinion itself say, not the news recap?", "agent": "scout"}
+{"text": "This patch dereferences the pointer before the null check. Show me the fix.", "agent": "vera"}
+{"text": "Walk the auth middleware and flag the bypass in the error branch.", "agent": "vera"}
+{"text": "The PR adds a retry loop that can double-charge the customer. Review it.", "agent": "vera"}
+{"text": "Is the mutex held across this await, and does that deadlock the pool?", "agent": "vera"}
+{"text": "Read src/session.cpp and list correctness bugs, not style nits.", "agent": "vera"}
+{"text": "The bounds check uses the wrong length after the resize. Prescribe the diff.", "agent": "vera"}
+{"text": "Turn these lab notes into a readable essay with a thesis in the first paragraph.", "agent": "quill"}
+{"text": "Write a README that tells a new hire how to run the project.", "agent": "quill"}
+{"text": "Rewrite this announcement so it sounds like a person, then save it as launch.md.", "agent": "quill"}
+{"text": "I need the onboarding guide as prose, not a pile of bullet fragments.", "agent": "quill"}
+{"text": "Draft the postmortem narrative from the timeline I pasted.", "agent": "quill"}
+{"text": "Produce the user-facing docs page for the export command.", "agent": "quill"}
+{"text": "The GitHub Action dies on the deploy job after the image push. Fix the workflow.", "agent": "forge"}
+{"text": "Add a liveness probe and a memory limit to the worker Deployment.", "agent": "forge"}
+{"text": "Our container builds fail because the base image tag moved. Pin it.", "agent": "forge"}
+{"text": "Pager went off: the ingress pods are crashlooping after the rollout.", "agent": "forge"}
+{"text": "Set up log shipping from the staging cluster to the existing bucket.", "agent": "forge"}
+{"text": "The terraform plan wants to destroy the database. Stop that and explain the diff.", "agent": "forge"}
+{"text": "The modal traps keyboard focus and never returns it to the opener.", "agent": "loom"}
+{"text": "This table re-renders every row when one checkbox changes.", "agent": "loom"}
+{"text": "The form labels are not associated with their inputs for screen readers.", "agent": "loom"}
+{"text": "Safari drops the sticky header under the overflow container. Fix the layout.", "agent": "loom"}
+{"text": "Route changes do not scroll the new page to the top.", "agent": "loom"}
+{"text": "The dark theme leaves the chart axis in a gray that fails contrast.", "agent": "loom"}
+{"text": "Add an idempotency key to the charge endpoint and a migration for it.", "agent": "nexus"}
+{"text": "The session lookup does a full table scan once the tenant has many rows.", "agent": "nexus"}
+{"text": "Expire refresh tokens on logout and cover it with a test.", "agent": "nexus"}
+{"text": "Design the webhook delivery table so retries do not double-apply.", "agent": "nexus"}
+{"text": "The pagination cursor breaks when two rows share a timestamp.", "agent": "nexus"}
+{"text": "Reject expired JWTs in the gateway before they hit the service.", "agent": "nexus"}
+{"text": "Split the migration into phases, name an owner for each, and write the plan to a file.", "agent": "compass"}
+{"text": "We are changing both the API and the mobile client. Sequence the work and the risks.", "agent": "compass"}
+{"text": "Turn this vague goal into a plan with acceptance checks per step.", "agent": "compass"}
+{"text": "What has to finish before the public launch, and which specialist owns each piece?", "agent": "compass"}
+{"text": "Lay out the dependencies between the schema change, the backfill, and the UI cutover.", "agent": "compass"}
+{"text": "Make an execution plan for retiring the old queue without dropping messages.", "agent": "compass"}
+{"text": "How should we position the audit log against the incumbent compliance story?", "agent": "beacon"}
+{"text": "Write the homepage message for a buyer who is tired of spreadsheet exports.", "agent": "beacon"}
+{"text": "Draft the pricing narrative for a team tier and an enterprise tier.", "agent": "beacon"}
+{"text": "The feature is shipped. Give me the launch narrative and the audience it is for.", "agent": "beacon"}
+{"text": "Competitors lead with speed. What value should we lead with instead?", "agent": "beacon"}
+{"text": "Turn the product brief into a one-page positioning statement.", "agent": "beacon"}
+{"text": "Write a three-post thread announcing the audit log, with a hook in the first line.", "agent": "echo"}
+{"text": "Turn this changelog into a LinkedIn post and a shorter social caption.", "agent": "echo"}
+{"text": "I need a week of social posts for the launch, native to each network.", "agent": "echo"}
+{"text": "Rewrite this blog intro as a short video script with an opening hook.", "agent": "echo"}
+{"text": "The last post died. Give me a different hook for the same feature.", "agent": "echo"}
+{"text": "Draft the carousel copy: one idea per slide, last slide is the ask.", "agent": "echo"}
+{"text": "Stay with me on this change. I keep losing the invariant I started with.", "agent": "jules"}
+{"text": "I am mid-edit and the next step is fuzzy. What is the one constraint I should not drop?", "agent": "jules"}
+{"text": "Do not take the keyboard. Just tell me if I am about to skip the test I meant to write.", "agent": "jules"}
+{"text": "Sit with this draft. I want the missing piece, not a rewrite.", "agent": "jules"}
+{"text": "I am in the middle of the deploy. Nudge me if I forget the rollback note.", "agent": "jules"}

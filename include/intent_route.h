@@ -2,16 +2,22 @@
 // arbiter/include/intent_route.h — Latency-first ingress routing.
 //
 // Live mode (ARBITER_INTENT_LIVE=luna, default off) replaces the full-LLM
-// intent fallback with two tiers:
+// intent fallback. The first pass is the local embedding router when its
+// model is loaded. Below that cutoff, one Luna decide() runs. The heuristic
+// decides only when the embedding model is absent.
 //
-//   1. heuristic_classify. A match at IntentConfig::min_confidence returns
-//      immediately and does not call a model.
-//   2. One Luna decide() over joint (agent, difficulty) labels. The call
-//      starts before context loading and shares its wait with that work.
-//      Low confidence still routes to the best guess. Timeout, transport
-//      error, or no observed label routes to the default agent. The advisor
-//      redirects a wrong guess; this path never calls the generative
-//      <intent> classifier.
+//   1. Embedding centroids. A match at embed_min_confidence returns
+//      immediately and does not call Luna or the heuristic.
+//   2. One Luna decide() over joint (agent, difficulty) labels when the
+//      embedding pass abstains. The call starts before context loading and
+//      shares its wait with that work. Low confidence still routes to the
+//      best guess. Timeout, transport error, or no observed label routes
+//      to the default agent.
+//   3. heuristic_classify, only if the embedder did not return a decision
+//      (runtime not linked, weights missing, or the call failed). A match
+//      at IntentConfig::min_confidence returns without Luna.
+//
+// This path never calls the generative <intent> classifier.
 //
 // Policy numbers live in intent_route_defaults() and the env parser below.
 // The router reads them from IntentRouteConfig; it does not embed cutoffs.
@@ -30,10 +36,13 @@
 //   luna_model            gpt-6-luna     ARBITER_INTENT_LUNA_MODEL
 //   cheap_model           empty          ARBITER_INTENT_CHEAP_MODEL
 //   strong_model          empty          ARBITER_INTENT_STRONG_MODEL
+//   embed_min_confidence  0.35           ARBITER_INTENT_EMBED_MIN_CONFIDENCE
+//   embed_temperature     0.02           ARBITER_INTENT_EMBED_TEMPERATURE
 //
-// Tier-1 still uses IntentConfig::min_confidence (master default 0.8).
-// Shadow mode (ARBITER_INTENT_SHADOW) is unchanged and is skipped while
-// live mode already ran, so Luna is not called twice.
+// The heuristic cutoff is still IntentConfig::min_confidence (master
+// default 0.8), and only applies when the embedding model is unavailable.
+// Shadow mode (ARBITER_INTENT_SHADOW=luna or embed) is skipped while live
+// mode already ran, so the same backend is not called twice.
 
 #include "decision.h"
 #include "intent.h"
@@ -74,6 +83,13 @@ struct IntentRouteConfig {
     std::string luna_model = kLunaModelId;
     std::string cheap_model;      // empty → the executing agent's model
     std::string strong_model;     // empty → advisor.model, else agent model
+    // Embedding softmax confidence. Below this, live mode calls Luna.
+    // The number is decision_confidence over the roster, not a raw cosine.
+    double embed_min_confidence = 0.35;
+    // Softmax temperature on cosine similarity. Does not change argmax;
+    // it calibrates the probabilities the cutoff reads. 0.02 had the
+    // lowest Brier and ECE on tests/data/intent_eval.jsonl.
+    double embed_temperature = 0.02;
 };
 
 // Documented defaults. Not read from the environment.
@@ -88,9 +104,10 @@ IntentRouteConfig intent_route_config_from_env();
 bool intent_live_luna_enabled();
 
 struct IntentRouteTimings {
-    // heuristic | cache | luna | luna_guess | fallback | explicit
+    // embed | heuristic | cache | luna | luna_guess | fallback | explicit
     std::string tier;
     bool cache_hit = false;
+    double embed_ms = 0;
     double luna_ms = 0;
     double total_ms = 0;
     double difficulty = 0;
@@ -116,6 +133,11 @@ using LunaDecideFn = std::function<DecisionResult(
 // Runs on the caller, overlapping the Luna call. Speculative agent is the
 // heuristic target when that is non-empty, otherwise the default agent.
 using ContextLoadFn = std::function<void(const std::string& speculative_agent)>;
+
+// Local embedding decide(). Empty means the model is not loaded; the
+// router then keeps the heuristic. A low-confidence result skips the
+// heuristic and falls through to Luna.
+using EmbedDecideFn = std::function<DecisionResult(const DecisionRequest&)>;
 
 // LRU of successful Luna decisions. Keyed by normalized text + roster ids.
 // Timed-out workers are joined from reap() and the destructor, not from
@@ -160,10 +182,11 @@ IntentRouteOutcome route_intent_live(const IntentInput& in,
                                      const IntentRouteConfig& route_cfg,
                                      IntentRouteCache& cache,
                                      const LunaDecideFn& luna,
-                                     const ContextLoadFn& context_load = {});
+                                     const ContextLoadFn& context_load = {},
+                                     const EmbedDecideFn& embed = {});
 
-// True when a live-mode intent should rewrite index → target. luna and
-// luna_guess apply below min_confidence. heuristic still uses that cutoff.
+// True when a live-mode intent should rewrite index → target. embed, luna,
+// and luna_guess apply below min_confidence. heuristic still uses that cutoff.
 bool intent_route_should_apply(const IntentConfig& cfg,
                                const Intent& intent,
                                const std::string& requested_agent,

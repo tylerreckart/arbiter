@@ -48,6 +48,8 @@ struct IntentRosterEntry {
     std::string role;
     std::string goal;
     std::vector<std::string> capabilities;
+    // Optional utterances averaged into this specialist's embedding centroid.
+    std::vector<std::string> routing_examples;
 };
 
 struct IntentSeedTodo {

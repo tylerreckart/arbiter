@@ -25,5 +25,10 @@
     "/mem",
     "/read",
     "/list"
+  ],
+  "routing_examples": [
+    "Stay with me while I work through this",
+    "What is the one thing I am about to miss?",
+    "Do not take over, just point at the gap"
   ]
 }

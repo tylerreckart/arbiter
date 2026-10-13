@@ -32,5 +32,10 @@
     "/todo",
     "/lesson",
     "/mcp"
+  ],
+  "routing_examples": [
+    "Review this diff for correctness bugs",
+    "Is this null check actually safe?",
+    "Show the defect and the fix"
   ]
 }

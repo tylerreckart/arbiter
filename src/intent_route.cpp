@@ -2,8 +2,11 @@
 //
 // Cutoffs come from IntentRouteConfig (see intent_route_defaults). This
 // file does not introduce a second confidence or timeout constant.
+// Embedding runs first when the caller passes a decide function. The
+// heuristic runs only when that function is absent or its result is not ok.
 
 #include "intent_route.h"
+#include "embed_route.h"
 #include "logger.h"
 
 #include <algorithm>
@@ -39,6 +42,15 @@ std::string trim_copy(std::string s) {
 
 bool flag_on(const std::string& s) {
     return s == "luna" || s == "on" || s == "true" || s == "1";
+}
+
+double env_temperature(const char* name, double fallback) {
+    const char* v = std::getenv(name);
+    if (!v || !*v) return fallback;
+    char* end = nullptr;
+    double x = std::strtod(v, &end);
+    if (end == v || !std::isfinite(x) || x <= 0.0 || x > 5.0) return fallback;
+    return x;
 }
 
 double env_unit(const char* name, double fallback) {
@@ -292,6 +304,7 @@ void log_route(const IntentRouteOutcome& out) {
     Logger::global().info("intent_route", {
         {"tier", out.timings.tier},
         {"cache_hit", out.timings.cache_hit ? "true" : "false"},
+        {"embed_ms", fmt_num(out.timings.embed_ms, 1)},
         {"luna_ms", fmt_num(out.timings.luna_ms, 1)},
         {"total_ms", fmt_num(out.timings.total_ms, 1)},
         {"choice", out.intent.target_agent},
@@ -386,6 +399,8 @@ IntentRouteConfig intent_route_defaults() {
     cfg.luna_model = kLunaModelId;
     cfg.cheap_model.clear();
     cfg.strong_model.clear();
+    cfg.embed_min_confidence = kEmbedDefaultMinConfidence;
+    cfg.embed_temperature = kEmbedDefaultTemperature;
     return cfg;
 }
 
@@ -409,6 +424,10 @@ IntentRouteConfig intent_route_config_from_env() {
     if (!model.empty()) cfg.luna_model = model;
     cfg.cheap_model = env_string("ARBITER_INTENT_CHEAP_MODEL", cfg.cheap_model);
     cfg.strong_model = env_string("ARBITER_INTENT_STRONG_MODEL", cfg.strong_model);
+    cfg.embed_min_confidence =
+        env_unit("ARBITER_INTENT_EMBED_MIN_CONFIDENCE", cfg.embed_min_confidence);
+    cfg.embed_temperature =
+        env_temperature("ARBITER_INTENT_EMBED_TEMPERATURE", cfg.embed_temperature);
     return cfg;
 }
 
@@ -510,8 +529,8 @@ bool intent_route_should_apply(const IntentConfig& cfg,
     const std::string req = requested_agent.empty() ? "index" : requested_agent;
     if (req != "index") return false;
     if (intent.target_agent.empty() || intent.target_agent == "index") return false;
-    if (intent.source == "luna" || intent.source == "luna_guess" ||
-        intent.source == "fallback")
+    if (intent.source == "embed" || intent.source == "luna" ||
+        intent.source == "luna_guess" || intent.source == "fallback")
         return true;
     return intent.confidence >= cfg.min_confidence;
 }
@@ -535,7 +554,8 @@ IntentRouteOutcome route_intent_live(const IntentInput& in,
                                      const IntentRouteConfig& route_cfg,
                                      IntentRouteCache& cache,
                                      const LunaDecideFn& luna,
-                                     const ContextLoadFn& context_load) {
+                                     const ContextLoadFn& context_load,
+                                     const EmbedDecideFn& embed) {
     const auto started = std::chrono::steady_clock::now();
     cache.reap();
 
@@ -551,6 +571,62 @@ IntentRouteOutcome route_intent_live(const IntentInput& in,
         return finish(std::move(out), started, route_cfg);
     }
 
+    // Embedding first, when the caller supplied a loaded model. A confident
+    // result does not consult the heuristic or Luna. A scored-but-unsure
+    // result skips the heuristic (it abstains more often than it helps) and
+    // falls through to Luna. A failed embed leaves the heuristic in place.
+    double embed_ms = 0;
+    bool embed_scored = false;
+    std::string embed_guess;
+    if (embed) {
+        DecisionRequest request;
+        request.state = in.text;
+        request.question = "Which specialist should handle this request?";
+        request.options = embed_options_from_roster(in.roster);
+        if (request.options.size() >= 2 && !request.state.empty()) {
+            DecisionResult scored;
+            try {
+                scored = embed(request);
+            } catch (const std::exception& e) {
+                scored.ok = false;
+                scored.error = e.what();
+            } catch (...) {
+                scored.ok = false;
+                scored.error = "embedding router failed";
+            }
+            embed_ms = scored.latency_ms;
+            bool known = false;
+            for (const auto& opt : request.options) {
+                if (opt.id == scored.choice) known = true;
+            }
+            if (scored.ok && known) {
+                embed_scored = true;
+                embed_guess = scored.choice;
+                if (scored.confidence >= route_cfg.embed_min_confidence) {
+                    IntentRouteOutcome out;
+                    Intent hint = heuristic_classify(in);
+                    if (in.source_hint == "event") hint.source = "event";
+                    out.intent = hint;
+                    out.intent.target_agent = scored.choice;
+                    out.intent.confidence = scored.confidence;
+                    out.intent.source = "embed";
+                    out.intent.llm_used = false;
+                    out.intent.malformed = false;
+                    if (hint.target_agent != scored.choice) {
+                        out.intent.kind = "unknown";
+                        out.intent.brief = "Route to " + scored.choice;
+                    }
+                    if (out.intent.brief.empty())
+                        out.intent.brief = "Route to " + scored.choice;
+                    out.timings.tier = "embed";
+                    out.timings.embed_ms = embed_ms;
+                    out.timings.choose_model = false;
+                    return finish(std::move(out), started, route_cfg);
+                }
+            }
+        }
+    }
+
     const std::string key = cache_key_for(in, route_cfg);
     if (route_cfg.cache_ttl_ms > 0) {
         if (auto hit = cache.lookup(key, route_cfg.cache_ttl_ms)) {
@@ -562,6 +638,7 @@ IntentRouteOutcome route_intent_live(const IntentInput& in,
                 out.timings.tier = "cache";
                 out.timings.cache_hit = true;
                 out.timings.luna_ms = 0;
+                out.timings.embed_ms = embed_ms;
                 return finish(std::move(out), started, route_cfg);
             }
         }
@@ -570,12 +647,14 @@ IntentRouteOutcome route_intent_live(const IntentInput& in,
     Intent hint = heuristic_classify(in);
     if (in.source_hint == "event") hint.source = "event";
     const bool heuristic_confident =
+        !embed_scored &&
         !hint.target_agent.empty() &&
         hint.confidence >= intent_cfg.min_confidence;
     if (heuristic_confident) {
         IntentRouteOutcome out;
         out.intent = hint;
         out.timings.tier = "heuristic";
+        out.timings.embed_ms = embed_ms;
         return finish(std::move(out), started, route_cfg);
     }
 
@@ -583,6 +662,7 @@ IntentRouteOutcome route_intent_live(const IntentInput& in,
         out.intent = fallback_intent(hint, route_cfg, error);
         out.timings.tier = "fallback";
         out.timings.error = error;
+        out.timings.embed_ms = embed_ms;
         return finish(std::move(out), started, route_cfg);
     };
 
@@ -632,8 +712,8 @@ IntentRouteOutcome route_intent_live(const IntentInput& in,
             state->finished->store(true, std::memory_order_release);
     });
 
-    std::string speculative = !hint.target_agent.empty() ? hint.target_agent
-                                                         : route_cfg.default_agent;
+    std::string speculative = !embed_guess.empty() ? embed_guess : hint.target_agent;
+    if (speculative.empty()) speculative = route_cfg.default_agent;
     if (speculative.empty()) speculative = "index";
     if (context_load) {
         try {
@@ -682,6 +762,7 @@ IntentRouteOutcome route_intent_live(const IntentInput& in,
         return give_up(std::move(out), "luna distribution had no agent");
     }
     fill_from_marginal(out.intent, hint, m, route_cfg, out.timings);
+    out.timings.embed_ms = embed_ms;
     if (route_cfg.cache_ttl_ms > 0)
         cache.store(key, result, route_cfg.cache_entries);
     return finish(std::move(out), started, route_cfg);

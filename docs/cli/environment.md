@@ -37,9 +37,9 @@ See [`docs/cli/connect.md`](connect.md). Local provider keys (`OPENROUTER_API_KE
 | `ARBITER_CIRCUIT_COOLDOWN_SECONDS`  | Cooldown in Open before a half-open probe. Default `30` (clamped ≥0). |
 | `ARBITER_INTENT_LLM_RATE_PER_MIN` | Extra per-tenant token bucket for `POST /v1/intent` hybrid/llm classify. Default `20`. `0` disables. Independent of `ARBITER_TENANT_RATE_PER_MIN`. See [Operations → Per-tenant rate / concurrency limiting](../concepts/operations.md#per-tenant-rate--concurrency-limiting). |
 | `ARBITER_INTENT_LLM_RATE_BURST` | Burst for the intent LLM bucket. Default `5`. |
-| `ARBITER_INTENT_SHADOW` | When `luna` (also `on` / `true` / `1`), depth-0 intent classification also asks `openai/gpt-6-luna` for a logprob distribution over the loaded roster and logs `intent_shadow`. Routing is unchanged. Unset or `off` disables it. Skipped when live mode is on, so Luna is not called twice. |
+| `ARBITER_INTENT_SHADOW` | When `luna` (also `on` / `true` / `1`), depth-0 intent classification also asks `openai/gpt-6-luna` for a logprob distribution over the loaded roster and logs `intent_shadow`. When `embed`, the same log line is the local embedding router instead. Routing is unchanged. Unset or `off` disables it. Skipped when live mode is on, so the same backend is not called twice. |
 | `ARBITER_INTENT_SHADOW_MODEL` | OpenRouter model id for the shadow call. Default `openai/gpt-6-luna`. |
-| `ARBITER_INTENT_LIVE` | When `luna` (also `on` / `true` / `1`), depth-0 ingress uses the tiered router instead of the generative `<intent>` classifier. Default off. Tier 1 is `heuristic_classify` at `intent.min_confidence` (master default 0.8) and makes no model call. Below that, one Luna `decide()` asks for specialist and difficulty together. Timeout, error, or no label routes to `ARBITER_INTENT_DEFAULT_AGENT` and leaves redirection to the advisor. |
+| `ARBITER_INTENT_LIVE` | When `luna` (also `on` / `true` / `1`), depth-0 ingress uses the tiered router instead of the generative `<intent>` classifier. Default off. The local embedding router runs first when its model is loaded. Below `ARBITER_INTENT_EMBED_MIN_CONFIDENCE`, one Luna `decide()` asks for specialist and difficulty together. The heuristic runs only when the embedding model is absent. Timeout, error, or no label routes to `ARBITER_INTENT_DEFAULT_AGENT` and leaves redirection to the advisor. |
 | `ARBITER_INTENT_LUNA_MIN_CONFIDENCE` | Luna confidence at or above this value is tier `luna`. Below it the best guess is still used (`luna_guess`). Default `0.55`. Clamped to [0, 1]. |
 | `ARBITER_INTENT_LUNA_TIMEOUT_MS` | How long the router waits for that one Luna call. Default `400`, clamped to ≥ 1. That default is a placeholder and needs tuning; it is not a measured Luna latency. A live check on 2026-10-13 (reasoning off, one output token) was p50 1359 ms and p95 1564 ms over 4 calls, and one-off curls took 4-5 s. Left at 400 ms, nearly every live call times out and the router falls back to the default agent. On expiry the call is cancelled and the default agent is used. |
 | `ARBITER_INTENT_STRONG_DIFFICULTY` | Difficulty at or above this selects the strong executor model. Default `0.5`. |
@@ -51,6 +51,11 @@ See [`docs/cli/connect.md`](connect.md). Local provider keys (`OPENROUTER_API_KE
 | `ARBITER_INTENT_LUNA_MODEL` | OpenRouter model id for the live call. Default `openai/gpt-6-luna`. |
 | `ARBITER_INTENT_CHEAP_MODEL` | Executor model when difficulty is below the strong cutoff. Empty uses the executing agent's `model`. |
 | `ARBITER_INTENT_STRONG_MODEL` | Executor model when difficulty is at or above the strong cutoff. Empty uses `advisor.model`, then the agent's `model`. |
+| `ARBITER_INTENT_EMBED_MIN_CONFIDENCE` | Embedding confidence at or above this value routes as `embed` and does not call Luna. Below it, Luna runs. Default `0.35`. Clamped to [0, 1]. |
+| `ARBITER_INTENT_EMBED_TEMPERATURE` | Softmax temperature on cosine similarity. Default `0.02`. Values outside (0, 5] are ignored. Argmax does not change with temperature; the cutoff does. |
+| `ARBITER_EMBED_MODEL` | Operator path to the ONNX file. Must be set together with `ARBITER_EMBED_VOCAB`. Checksum is not applied to an operator path. |
+| `ARBITER_EMBED_VOCAB` | Operator path to the WordPiece `vocab.txt`. Pair with `ARBITER_EMBED_MODEL`. |
+| `ARBITER_EMBED_NO_FETCH` | When set to anything other than `0` / `false` / `off`, a missing model is not downloaded. Live routing falls back to the heuristic. `ARBITER_OFFLINE` does the same. |
 
 ## TUI session durability
 

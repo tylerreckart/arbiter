@@ -5,6 +5,7 @@
 #include "intent.h"
 #include "decision.h"
 #include "intent_route.h"
+#include "embed_route.h"
 #include "intent_history_mirror.h"
 #include "atomic_file.h"
 #include "commands.h"
@@ -203,6 +204,29 @@ void Orchestrator::load_agents(const std::string& dir) {
             }
         }
     }
+    // Centroids are a startup cost only when live or shadow routing will
+    // actually embed. A missing model is ignored; ingress falls back.
+    if (!intent_live_luna_enabled() && !intent_shadow_embed_enabled()) return;
+    std::vector<IntentRosterEntry> roster;
+    {
+        std::lock_guard<std::mutex> lock(agents_mutex_);
+        roster.reserve(agents_.size());
+        for (const auto& [id, agent] : agents_) {
+            const auto& c = agent->config();
+            IntentRosterEntry entry;
+            entry.id = id;
+            entry.role = c.role;
+            entry.goal = c.goal;
+            entry.capabilities = c.capabilities;
+            entry.routing_examples = c.routing_examples;
+            roster.push_back(std::move(entry));
+        }
+    }
+    try {
+        auto& router = EmbeddingRouter::instance();
+        if (router.prepare())
+            router.precompute(embed_options_from_roster(roster));
+    } catch (...) {}
 }
 
 // Build an AgentInvoker that runs a sub-agent through the full dispatch loop.
@@ -917,7 +941,13 @@ Orchestrator::apply_intent_ingress(const std::string& agent_id,
         for (const auto& [id, agent] : agents_) {
             if (in.roster.size() >= kIntentRosterMax) break;
             const auto& c = agent->config();
-            in.roster.push_back({id, c.role, c.goal, c.capabilities});
+            IntentRosterEntry entry;
+            entry.id = id;
+            entry.role = c.role;
+            entry.goal = c.goal;
+            entry.capabilities = c.capabilities;
+            entry.routing_examples = c.routing_examples;
+            in.roster.push_back(std::move(entry));
         }
     }
 
@@ -972,9 +1002,19 @@ Orchestrator::apply_intent_ingress(const std::string& agent_id,
             }
             tl_ingress_prefetch = std::move(pre);
         };
+        EmbedDecideFn embed;
+        try {
+            auto& router = EmbeddingRouter::instance();
+            if (router.ready() || router.prepare()) {
+                const double temperature = route_cfg.embed_temperature;
+                embed = [temperature](const DecisionRequest& request) {
+                    return EmbeddingRouter::instance().decide(request, temperature);
+                };
+            }
+        } catch (...) {}
         try {
             IntentRouteOutcome outcome = route_intent_live(
-                in, icfg, route_cfg, intent_route_cache_, luna, load);
+                in, icfg, route_cfg, intent_route_cache_, luna, load, embed);
             result.intent = std::move(outcome.intent);
             result.applied = intent_route_should_apply(
                                  icfg, result.intent, in.requested_agent, fresh_ingress) &&
@@ -1048,7 +1088,10 @@ Orchestrator::apply_intent_ingress(const std::string& agent_id,
     // do not call it again.
     if (!live_ran) {
         try {
-            shadow_intent_decision(client_, in.text, in.roster, result.intent);
+            if (intent_shadow_embed_enabled())
+                shadow_embed_decision(in.text, in.roster, result.intent);
+            else
+                shadow_intent_decision(client_, in.text, in.roster, result.intent);
         } catch (...) {}
     }
     return result;

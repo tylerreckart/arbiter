@@ -539,7 +539,8 @@ Intent resolve_intent(const IntentInput& in,
 
 std::string format_intent_preamble(const Intent& intent, bool for_specialist) {
     if (intent.source == "none" || intent.source.empty()) return {};
-    const bool live_source = intent.source == "luna" ||
+    const bool live_source = intent.source == "embed" ||
+                             intent.source == "luna" ||
                              intent.source == "luna_guess" ||
                              intent.source == "fallback";
     if (intent.kind.empty() || (intent.kind == "unknown" && intent.source != "llm" &&

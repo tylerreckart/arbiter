@@ -30,6 +30,18 @@ static IntentConfig hybrid_cfg() {
     return c;
 }
 
+TEST_CASE("embed source is visible on the preamble") {
+    Intent in;
+    in.source = "embed";
+    in.kind = "unknown";
+    in.confidence = 0.42;
+    in.target_agent = "scout";
+    in.brief = "Route to scout";
+    auto spec = format_intent_preamble(in, true);
+    CHECK(spec.find("source=embed") != std::string::npos);
+    CHECK(spec.find("agent=scout") != std::string::npos);
+}
+
 TEST_CASE("cue: research maps uniquely to scout") {
     IntentInput in;
     in.text = "Look up primary sources for the 2024 RISC-V memory model";

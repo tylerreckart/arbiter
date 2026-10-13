@@ -6,6 +6,7 @@
 #include "doctest.h"
 
 #include "intent_route.h"
+#include "embed_route.h"
 
 #include <atomic>
 #include <chrono>
@@ -353,6 +354,102 @@ TEST_CASE("select_executor_model uses difficulty and leaves the agent model alon
     CHECK(select_executor_model("base", "advisor", 0, false, cfg).empty());
 }
 
+DecisionResult embed_of(const std::string& choice, double confidence, bool ok = true) {
+    DecisionResult r;
+    r.ok = ok;
+    r.choice = choice;
+    r.confidence = confidence;
+    r.latency_ms = 3;
+    r.backend = "embed-centroid";
+    return r;
+}
+
+TEST_CASE("a confident embedding routes and does not call luna") {
+    IntentRouteCache cache;
+    int luna_calls = 0;
+    int embed_calls = 0;
+    auto cfg = route_cfg();
+    cfg.embed_min_confidence = 0.35;
+    auto out = route_intent_live(
+        input("Look up primary sources for the 2024 RISC-V memory model"),
+        hybrid(), cfg, cache,
+        [&](const DecisionRequest&, const std::atomic<bool>&) {
+            ++luna_calls;
+            return joint_result(0.05, 0.90, 0.03, 0.02);
+        },
+        {},
+        [&](const DecisionRequest&) {
+            ++embed_calls;
+            return embed_of("vera", 0.9);
+        });
+    CHECK(embed_calls == 1);
+    CHECK(luna_calls == 0);
+    CHECK(out.timings.tier == "embed");
+    CHECK(out.intent.source == "embed");
+    CHECK(out.intent.target_agent == "vera");
+    CHECK_FALSE(out.timings.choose_model);
+    CHECK(intent_route_should_apply(hybrid(), out.intent, "index"));
+}
+
+TEST_CASE("low embedding confidence skips a strong heuristic and calls luna") {
+    IntentRouteCache cache;
+    int luna_calls = 0;
+    auto cfg = route_cfg();
+    cfg.embed_min_confidence = 0.35;
+    auto out = route_intent_live(
+        input("Look up primary sources for the 2024 RISC-V memory model"),
+        hybrid(), cfg, cache,
+        [&](const DecisionRequest&, const std::atomic<bool>&) {
+            ++luna_calls;
+            return joint_result(0.05, 0.90, 0.03, 0.02);
+        },
+        {},
+        [&](const DecisionRequest&) { return embed_of("vera", 0.1); });
+    CHECK(luna_calls == 1);
+    CHECK(out.timings.tier != "heuristic");
+    CHECK(out.timings.tier != "embed");
+    CHECK(out.intent.target_agent == "scout");
+    CHECK(out.timings.embed_ms == doctest::Approx(3));
+}
+
+TEST_CASE("an embedding failure keeps the heuristic") {
+    IntentRouteCache cache;
+    int luna_calls = 0;
+    auto out = route_intent_live(
+        input("Look up primary sources for the 2024 RISC-V memory model"),
+        hybrid(), route_cfg(), cache,
+        [&](const DecisionRequest&, const std::atomic<bool>&) {
+            ++luna_calls;
+            return joint_result(0.05, 0.90, 0.03, 0.02);
+        },
+        {},
+        [&](const DecisionRequest&) { return embed_of("", 0, false); });
+    CHECK(luna_calls == 0);
+    CHECK(out.timings.tier == "heuristic");
+    CHECK(out.intent.target_agent == "scout");
+}
+
+TEST_CASE("a confident embedding wins over a cached luna decision") {
+    IntentRouteCache cache;
+    auto cfg = route_cfg();
+    route_intent_live(input("hello there"), hybrid(), cfg, cache,
+                      [&](const DecisionRequest&, const std::atomic<bool>&) {
+                          return joint_result(0.05, 0.90, 0.03, 0.02);
+                      });
+    int luna_calls = 0;
+    auto out = route_intent_live(
+        input("hello there"), hybrid(), cfg, cache,
+        [&](const DecisionRequest&, const std::atomic<bool>&) {
+            ++luna_calls;
+            return joint_result(0.05, 0.02, 0.03, 0.90);
+        },
+        {},
+        [&](const DecisionRequest&) { return embed_of("vera", 0.95); });
+    CHECK(luna_calls == 0);
+    CHECK(out.timings.tier == "embed");
+    CHECK(out.intent.target_agent == "vera");
+}
+
 TEST_CASE("env parser keeps documented defaults and rejects junk") {
     unsetenv("ARBITER_INTENT_LIVE");
     unsetenv("ARBITER_INTENT_LUNA_MIN_CONFIDENCE");
@@ -365,6 +462,8 @@ TEST_CASE("env parser keeps documented defaults and rejects junk") {
     CHECK(base.cache_ttl_ms == 60000);
     CHECK(base.cache_entries == 64);
     CHECK(base.default_agent == "index");
+    CHECK(base.embed_min_confidence == doctest::Approx(kEmbedDefaultMinConfidence));
+    CHECK(base.embed_temperature == doctest::Approx(kEmbedDefaultTemperature));
     {
         EnvGuard live("ARBITER_INTENT_LIVE", "luna");
         EnvGuard junk("ARBITER_INTENT_LUNA_MIN_CONFIDENCE", "nope");
@@ -374,6 +473,13 @@ TEST_CASE("env parser keeps documented defaults and rejects junk") {
         CHECK(cfg.live);
         CHECK(cfg.luna_min_confidence == doctest::Approx(0.55));
         CHECK(cfg.timeout_ms == 250);
+    }
+    {
+        EnvGuard junk("ARBITER_INTENT_EMBED_TEMPERATURE", "nope");
+        EnvGuard cutoff("ARBITER_INTENT_EMBED_MIN_CONFIDENCE", "0.4");
+        auto cfg = intent_route_config_from_env();
+        CHECK(cfg.embed_temperature == doctest::Approx(kEmbedDefaultTemperature));
+        CHECK(cfg.embed_min_confidence == doctest::Approx(0.4));
     }
     CHECK_FALSE(intent_live_luna_enabled());
 }

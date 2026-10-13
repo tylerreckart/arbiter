@@ -49,5 +49,10 @@
     "/advise",
     "/schedule",
     "/mcp"
+  ],
+  "routing_examples": [
+    "Break this project into phases and owners",
+    "What is the sequence of work and the risks?",
+    "Write the plan to a file"
   ]
 }
