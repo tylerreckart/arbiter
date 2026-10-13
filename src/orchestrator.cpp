@@ -3,6 +3,7 @@
 #include "advisor.h"
 #include "presence.h"
 #include "intent.h"
+#include "decision.h"
 #include "intent_history_mirror.h"
 #include "atomic_file.h"
 #include "commands.h"
@@ -928,6 +929,13 @@ Orchestrator::apply_intent_ingress(const std::string& agent_id,
         ev.applied = result.applied;
         try { intent_cb_(ev); } catch (...) {}
     }
+
+    // Optional Luna logprob classifier. Logs beside the heuristic/LLM
+    // decision and does not rewrite agent_id, preamble, or intent.
+    // Off unless ARBITER_INTENT_SHADOW=luna.
+    try {
+        shadow_intent_decision(client_, in.text, in.roster, result.intent);
+    } catch (...) {}
     return result;
 }
 

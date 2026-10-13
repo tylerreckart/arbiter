@@ -37,6 +37,8 @@ See [`docs/cli/connect.md`](connect.md). Local provider keys (`OPENROUTER_API_KE
 | `ARBITER_CIRCUIT_COOLDOWN_SECONDS`  | Cooldown in Open before a half-open probe. Default `30` (clamped ≥0). |
 | `ARBITER_INTENT_LLM_RATE_PER_MIN` | Extra per-tenant token bucket for `POST /v1/intent` hybrid/llm classify. Default `20`. `0` disables. Independent of `ARBITER_TENANT_RATE_PER_MIN`. See [Operations → Per-tenant rate / concurrency limiting](../concepts/operations.md#per-tenant-rate--concurrency-limiting). |
 | `ARBITER_INTENT_LLM_RATE_BURST` | Burst for the intent LLM bucket. Default `5`. |
+| `ARBITER_INTENT_SHADOW` | When `luna` (also `on` / `true` / `1`), depth-0 intent classification also asks `openai/gpt-6-luna` for a logprob distribution over the loaded roster and logs `intent_shadow`. Routing is unchanged. Unset or `off` disables it. |
+| `ARBITER_INTENT_SHADOW_MODEL` | OpenRouter model id for the shadow call. Default `openai/gpt-6-luna`. |
 
 ## TUI session durability
 

@@ -87,6 +87,14 @@ Desired-end-state work (workspace + tests + rollback) is [`POST /v1/reconcile`](
 | TUI | Applied: info-tinted `↗ research · heuristic` (callsign suffix when the agent id differs from the kind, e.g. `scout`). Classified but not applied: warning-tinted `· intent research · hint:scout`. Quiet when `kind` is empty/`unknown`. Distinct from `·` system activity and from `→ delegating:`. |
 | Verbose API log | `--verbose` renders `intent` alongside `advisor` / `tool_call`. |
 
+## Shadow logprob classifier
+
+`ARBITER_INTENT_SHADOW=luna` runs a second classifier beside the one above and logs the result as `intent_shadow`. It does not change `kind`, `target_agent`, or routing.
+
+The shadow backend is `LunaLogprobBackend`: options are single-letter labels, the request asks OpenRouter for `openai/gpt-6-luna` with reasoning effort `none`, one output token, and `logprobs` / `top_logprobs`. Confidence is `(p_max - 1/n) / (1 - 1/n)`. As of 2026-10-13, OpenRouter's model catalogue does not list `logprobs` for this id; a rejection is logged and the heuristic/LLM decision stands.
+
+`arbiter-decision-smoke` runs the same backend against `agents/*.json` when `OPENROUTER_API_KEY` is set. Without a key it exits without calling the model.
+
 ## See also
 
 - [`POST /v1/intent`](../api/intent.md) — standalone classify (defaults to heuristic; opt into hybrid/llm)

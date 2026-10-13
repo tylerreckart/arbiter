@@ -5,6 +5,8 @@
 #include "metrics.h"
 
 #include <cctype>
+#include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <sstream>
@@ -755,6 +757,30 @@ std::string ApiClient::build_body_openai(const Provider& prov,
     if (is_openai) m["max_completion_tokens"] = jnum(static_cast<double>(req.max_tokens));
     else           m["max_tokens"]            = jnum(static_cast<double>(req.max_tokens));
     if (req.include_temperature && !reasoning) m["temperature"] = jnum(req.temperature);
+    // Opt-in. Generative calls leave logprobs false so older
+    // OpenAI-compatible servers never see the fields.
+    if (req.logprobs) {
+        m["logprobs"] = jbool(true);
+        int top = req.top_logprobs;
+        if (top > 20) top = 20;
+        if (top > 0) m["top_logprobs"] = jnum(static_cast<double>(top));
+    }
+    // Reasoning controls are OpenRouter's. Ollama rejects unknown fields,
+    // so a local model never sees them.
+    if (prov.name == "openrouter" &&
+        (!req.reasoning_effort.empty() || req.reasoning_exclude)) {
+        auto reasoning = jobj();
+        auto& rm = reasoning->as_object_mut();
+        if (!req.reasoning_effort.empty()) {
+            rm["effort"] = jstr(req.reasoning_effort);
+            m["reasoning_effort"] = jstr(req.reasoning_effort);
+        }
+        if (req.reasoning_exclude) rm["exclude"] = jbool(true);
+        m["reasoning"] = reasoning;
+        // GPT-6 routes on OpenRouter honor max_completion_tokens. Keep the
+        // max_tokens field already written above for older routes.
+        m["max_completion_tokens"] = jnum(static_cast<double>(req.max_tokens));
+    }
     if (streaming) {
         m["stream"] = jbool(true);
         // OpenAI only reports usage on the terminal stream chunk when you opt
@@ -1156,11 +1182,112 @@ ApiResponse ApiClient::parse_body_anthropic(const std::string& body) {
     return resp;
 }
 
+namespace {
+
+bool read_json_number(const JsonValue& obj, const char* key, double& out) {
+    auto v = obj.get(key);
+    if (!v) return false;
+    if (v->is_number()) {
+        out = v->as_number();
+        return std::isfinite(out);
+    }
+    if (v->is_string()) {
+        const std::string& s = v->as_string();
+        if (s.empty()) return false;
+        char* end = nullptr;
+        double d = std::strtod(s.c_str(), &end);
+        if (end == s.c_str() || !std::isfinite(d)) return false;
+        out = d;
+        return true;
+    }
+    return false;
+}
+
+void parse_openai_usage(const JsonValue& root, ApiResponse& resp) {
+    auto usage = root.get("usage");
+    if (!usage || !usage->is_object()) return;
+    resp.input_tokens  = usage->get_int("prompt_tokens");
+    resp.output_tokens = usage->get_int("completion_tokens");
+    auto details = usage->get("prompt_tokens_details");
+    if (details && details->is_object()) {
+        resp.cache_read_tokens = details->get_int("cached_tokens");
+    }
+    double cost = 0;
+    if (read_json_number(*usage, "cost", cost) ||
+        read_json_number(*usage, "total_cost", cost)) {
+        resp.has_cost = true;
+        resp.cost_usd = cost;
+    }
+}
+
+void parse_openai_logprobs(const JsonValue& choice, ApiResponse& resp) {
+    auto logprobs = choice.get("logprobs");
+    if (!logprobs || !logprobs->is_object()) return;
+    auto content = logprobs->get("content");
+    if (!content || !content->is_array()) return;
+    resp.logprobs.reserve(content->as_array().size());
+    for (const auto& entry : content->as_array()) {
+        if (!entry || !entry->is_object()) continue;
+        TokenLogprobs tok;
+        tok.token = entry->get_string("token");
+        double lp = 0;
+        if (read_json_number(*entry, "logprob", lp)) {
+            tok.logprob = lp;
+            tok.has_logprob = true;
+        }
+        auto top = entry->get("top_logprobs");
+        if (top && top->is_array()) {
+            tok.top_logprobs.reserve(top->as_array().size());
+            for (const auto& alt : top->as_array()) {
+                if (!alt || !alt->is_object()) continue;
+                double alp = 0;
+                if (!read_json_number(*alt, "logprob", alp)) continue;
+                TopLogprob item;
+                item.token = alt->get_string("token");
+                item.logprob = alp;
+                tok.top_logprobs.push_back(std::move(item));
+            }
+        }
+        resp.logprobs.push_back(std::move(tok));
+    }
+}
+
+std::string log_field(std::string s) {
+    for (char& c : s) {
+        if (c == ' ' || c == '\n' || c == '\r' || c == '\t') c = '_';
+    }
+    if (s.empty()) return "-";
+    return s;
+}
+
+// One line per non-streaming OpenRouter response that names the model it
+// served or the USD cost it billed. Streaming chat does not parse this
+// body shape; the decision backend uses complete().
+void log_openrouter_served(const Provider& prov,
+                           const ApiRequest& req,
+                           const ApiResponse& resp) {
+    if (prov.name != "openrouter") return;
+    if (resp.served_model.empty() && !resp.has_cost) return;
+    char cost[64];
+    if (resp.has_cost) std::snprintf(cost, sizeof(cost), "%.8g", resp.cost_usd);
+    else std::snprintf(cost, sizeof(cost), "unknown");
+    std::fprintf(stderr,
+                 "[info] openrouter_response requested_model=%s served_model=%s cost_usd=%s\n",
+                 log_field(req.model).c_str(),
+                 log_field(resp.served_model).c_str(),
+                 cost);
+    std::fflush(stderr);
+}
+
+} // namespace
+
 ApiResponse ApiClient::parse_body_openai(const std::string& body) {
     ApiResponse resp;
     resp.raw_body = body;
     try {
         auto root = json_parse(body);
+        resp.served_model = root->get_string("model");
+        parse_openai_usage(*root, resp);
         auto err = root->get("error");
         if (err && err->is_object()) {
             resp.ok         = false;
@@ -1176,18 +1303,7 @@ ApiResponse ApiClient::parse_body_openai(const std::string& body) {
                 auto msg = ch0->get("message");
                 if (msg) resp.content = msg->get_string("content");
                 resp.stop_reason = ch0->get_string("finish_reason");
-            }
-        }
-        // Usage is optional on openai-compat servers.  Ollama reports it.
-        // OpenAI nests cached-prompt tokens under prompt_tokens_details
-        // (implicit caching, no write cost); surface as cache_read_tokens.
-        auto usage = root->get("usage");
-        if (usage && usage->is_object()) {
-            resp.input_tokens  = usage->get_int("prompt_tokens");
-            resp.output_tokens = usage->get_int("completion_tokens");
-            auto details = usage->get("prompt_tokens_details");
-            if (details && details->is_object()) {
-                resp.cache_read_tokens = details->get_int("cached_tokens");
+                parse_openai_logprobs(*ch0, resp);
             }
         }
         resp.ok = true;
@@ -1417,6 +1533,7 @@ ApiResponse ApiClient::complete(const ApiRequest& req) {
                     case Provider::FORMAT_OPENAI_CHAT: default:
                         resp = parse_body_openai(raw); break;
                 }
+                log_openrouter_served(prov, req, resp);
             } catch (...) {
                 close_connection(c);
                 threw = true;

@@ -18,6 +18,9 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   this repository. `install.sh` is at the repo root and is fetched from
   GitHub raw (`main`) or attached to each GitHub Release.
 
+### Added
+- **Luna logprob decision backend (prototype).** `decide(state, question, options)` with a swappable `DecisionBackend`. `LunaLogprobBackend` asks OpenRouter for `openai/gpt-6-luna` with reasoning off, one output token, and logprobs, then normalizes probabilities over the option labels. `ARBITER_INTENT_SHADOW=luna` logs that decision beside ingress classification and does not change routing. `arbiter-decision-smoke` is the live check; it refuses to invent a distribution when no API key is set. OpenRouter's catalogue does not currently advertise `logprobs` for this model.
+
 ## [0.13.11] — 2026-09-21
 
 - **Fleet dashboard pane (Phase C1).** The TUI consumes fleet SSE (`stream_id` +

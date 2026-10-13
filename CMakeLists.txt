@@ -195,6 +195,7 @@ set(ARBITER_SOURCES
     src/constitution.cpp
     src/orchestrator.cpp
     src/intent.cpp
+    src/decision.cpp
     src/reconcile.cpp
     src/advisor_gate.cpp
     src/advisor.cpp
@@ -409,6 +410,29 @@ install(DIRECTORY themes/ DESTINATION share/arbiter/themes
 
 target_compile_definitions(arbiter PRIVATE
     ARBITER_THEMES_DIR="${CMAKE_SOURCE_DIR}/themes")
+
+# Manual live check for the Luna logprob decision backend. Not a unit test:
+# it calls OpenRouter only when OPENROUTER_API_KEY is set, and exits 2
+# otherwise without inventing a distribution.
+add_executable(arbiter-decision-smoke
+    src/decision_smoke.cpp
+    src/decision.cpp
+    src/api_client.cpp
+    src/circuit_breaker.cpp
+    src/metrics.cpp
+    src/json.cpp
+    src/logger.cpp
+)
+target_include_directories(arbiter-decision-smoke PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${OPENSSL_INCLUDE_DIR}
+)
+target_link_libraries(arbiter-decision-smoke PRIVATE
+    Threads::Threads
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    CURL::libcurl
+)
 
 # --- Tests ---
 # PTY-based integration tests that drive the real `arbiter` binary through
@@ -1821,6 +1845,30 @@ if(INDEX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/third_party/doctest
     )
     add_test(NAME unit_intent COMMAND unit_intent)
+
+    # Logprob decision interface and the Luna backend. Mocked completions
+    # only — live calls are arbiter-decision-smoke.
+    add_executable(unit_decision
+        tests/test_decision.cpp
+        src/decision.cpp
+        src/api_client.cpp
+        src/circuit_breaker.cpp
+        src/metrics.cpp
+        src/json.cpp
+        src/logger.cpp
+    )
+    target_include_directories(unit_decision PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}
+    )
+    target_link_libraries(unit_decision PRIVATE
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        CURL::libcurl
+        Threads::Threads
+    )
+    add_test(NAME unit_decision COMMAND unit_decision)
 
     # Intent reconcile: admit, contract compile, observe ΔS, JIT ensure
     # waves, verification mandate, implement stub, snapshot rollback.
