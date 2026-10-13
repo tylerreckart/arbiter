@@ -212,6 +212,10 @@ TEST_CASE("per-token cancel unblocks complete() waiting on a saturated pool") {
     CHECK(waiter_done.load());
     CHECK(waiter_resp.error_type == "cancelled");
     CHECK(waiter_resp.ok == false);
+    // Token cancel unblocks this waiter only.  The holders still own
+    // leases on the same client; promoting to hard_cancelled_ would
+    // abort them (#327).
+    CHECK_FALSE(g.client.hard_cancelled());
 }
 
 TEST_CASE("process-wide cancel() unblocks a pool-CV waiter without a token") {
@@ -240,4 +244,5 @@ TEST_CASE("process-wide cancel() unblocks a pool-CV waiter without a token") {
     CHECK(waiter_done.load());
     CHECK(waiter_resp.error_type == "cancelled");
     CHECK(waiter_resp.ok == false);
+    CHECK(g.client.hard_cancelled());
 }

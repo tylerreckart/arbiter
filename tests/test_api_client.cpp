@@ -450,19 +450,22 @@ TEST_CASE("per-request CancelToken does not promote to hard_cancelled") {
     using arbiter::CancelToken;
     using arbiter::RequestCancelScope;
 
-    // complete() short-circuits on ARBITER_OFFLINE before the attempt
-    // loop that used to promote token cancel → hard_cancelled_.
+    // Unset so complete()/stream() reach ConnLease.  ARBITER_OFFLINE
+    // returns before the lease, which is the path that used to promote
+    // a per-request token cancel into hard_cancelled_ (#327 / #323).
     const char* prev = std::getenv("ARBITER_OFFLINE");
     ::unsetenv("ARBITER_OFFLINE");
 
     ApiClient client({});
     auto token = std::make_shared<CancelToken>();
     token->request_cancel();
+    ApiRequest req;
+    req.model = "claude-haiku-4-5-20251001";
+    req.messages = {{"user", "hi"}};
     {
         RequestCancelScope scope(client, token);
-        ApiRequest req;
-        req.model = "claude-haiku-4-5-20251001";
-        req.messages = {{"user", "hi"}};
+        // Token is already cancelled, so ConnLease aborts before taking
+        // a slot.  That abort must not latch the shared client's kill-switch.
         auto resp = client.complete(req);
         CHECK_FALSE(resp.ok);
         CHECK(resp.error_type == "cancelled");
@@ -471,6 +474,59 @@ TEST_CASE("per-request CancelToken does not promote to hard_cancelled") {
         CHECK(streamed.error_type == "cancelled");
     }
     CHECK_FALSE(client.hard_cancelled());
+
+    // A later turn on the same client must still reach the provider
+    // short-circuit, not a sticky cancel.
+    ::setenv("ARBITER_OFFLINE", "1", 1);
+    auto after = client.complete(req);
+    CHECK_FALSE(after.ok);
+    CHECK(after.error_type == "authentication_error");
+    auto after_stream = client.stream(req, [](const std::string&) {});
+    CHECK_FALSE(after_stream.ok);
+    CHECK(after_stream.error_type == "authentication_error");
+    CHECK_FALSE(client.hard_cancelled());
+
+    if (prev) ::setenv("ARBITER_OFFLINE", prev, 1);
+    else ::unsetenv("ARBITER_OFFLINE");
+}
+
+TEST_CASE("preflight failure on a token-cancelled lease still latches hard_cancelled") {
+    using arbiter::ApiClient;
+    using arbiter::ApiRequest;
+    using arbiter::ApiResponse;
+    using arbiter::CancelToken;
+    using arbiter::RequestCancelScope;
+
+    const char* prev = std::getenv("ARBITER_OFFLINE");
+    ::unsetenv("ARBITER_OFFLINE");
+
+    // Entry checks preflight once before the lease.  The second call is
+    // the lease-abort recheck: kill-switch must still stick even though
+    // the lease itself failed only because the token was cancelled.
+    // Both complete() and stream() have their own lease site.
+    auto check_one = [](bool streaming) {
+        ApiClient client({});
+        int calls = 0;
+        client.set_preflight([&] { return calls++ == 0; });
+
+        auto token = std::make_shared<CancelToken>();
+        token->request_cancel();
+        {
+            RequestCancelScope scope(client, token);
+            ApiRequest req;
+            req.model = "claude-haiku-4-5-20251001";
+            req.messages = {{"user", "hi"}};
+            ApiResponse resp = streaming
+                ? client.stream(req, [](const std::string&) {})
+                : client.complete(req);
+            CHECK_FALSE(resp.ok);
+            CHECK(resp.error_type == "cancelled");
+        }
+        CHECK(calls >= 2);
+        CHECK(client.hard_cancelled());
+    };
+    check_one(false);
+    check_one(true);
 
     if (prev) ::setenv("ARBITER_OFFLINE", prev, 1);
     else ::unsetenv("ARBITER_OFFLINE");

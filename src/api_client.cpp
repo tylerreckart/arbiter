@@ -513,6 +513,18 @@ bool ApiClient::run_preflight() {
     }
 }
 
+bool ApiClient::latch_sticky_cancel() {
+    // Single store site for the request path (cancel() is the other).
+    // ConnLease treats a per-request token the same as a process-wide
+    // cancel — both make valid() false — so complete()/stream() must
+    // call this instead of storing hard_cancelled_ unconditionally.
+    if (hard_cancelled_.load(std::memory_order_acquire) || !run_preflight()) {
+        hard_cancelled_.store(true, std::memory_order_release);
+        return true;
+    }
+    return false;
+}
+
 // Lease a Conn out of the provider's pool.  Prefer an idle Conn (reuse its
 // keep-alive socket); otherwise open a new slot up to the cap; otherwise wait
 // for a lease to be returned.  The leased Conn stays owned by the pool (via
@@ -527,6 +539,8 @@ ApiClient::ConnLease::ConnLease(ApiClient& owner, const std::string& provider)
                static_cast<int>(pool_.conns.size()) < kMaxConnsPerProvider;
     });
     if (owner_.is_request_cancelled()) {
+        // Leave conn_ null.  A per-request token aborts only this wait;
+        // callers latch hard_cancelled_ via latch_sticky_cancel().
         return;
     }
     if (!pool_.idle.empty()) {
@@ -1289,8 +1303,7 @@ ApiResponse ApiClient::complete(const ApiRequest& req) {
     // Sticky hard-cancel (admin kill-switch / Orchestrator::cancel) must
     // survive across tool-loop iterations.  Only the ephemeral cancelled_
     // bit is cleared so a prior soft cancel doesn't burn the retry budget.
-    if (hard_cancelled_.load(std::memory_order_acquire) || !run_preflight()) {
-        hard_cancelled_.store(true, std::memory_order_release);
+    if (latch_sticky_cancel()) {
         ApiResponse r;
         r.ok         = false;
         r.error_type = "cancelled";
@@ -1327,7 +1340,12 @@ ApiResponse ApiClient::complete(const ApiRequest& req) {
     // leased Conns run fully in parallel.
     ConnLease lease(*this, prov.name);
     if (!lease.valid()) {
-        hard_cancelled_.store(true, std::memory_order_release);
+        // Lease abort includes a per-request CancelToken (Esc / /kill on
+        // this pane, or a waiter already cancelled before the pool CV).
+        // Latch only for cancel() or a failed preflight so sibling panes
+        // and /loop streams keep the shared client (#327).  The bool is
+        // unused: every invalid lease is a cancel of this request.
+        (void)latch_sticky_cancel();
         if (breaker_) breaker_->record_abandoned(prov.name);
         ApiResponse r;
         r.ok         = false;
@@ -1341,8 +1359,7 @@ ApiResponse ApiClient::complete(const ApiRequest& req) {
         // Kill-switch / preflight → sticky hard-cancel.  A per-request
         // CancelToken must not promote: TUI panes and /loop share one
         // ApiClient, and Esc / /kill are scoped (#46 / #48).
-        if (hard_cancelled_.load(std::memory_order_acquire) || !run_preflight()) {
-            hard_cancelled_.store(true, std::memory_order_release);
+        if (latch_sticky_cancel()) {
             if (breaker_) breaker_->record_abandoned(prov.name);
             ApiResponse r;
             r.ok         = false;
@@ -1663,10 +1680,8 @@ ApiResponse ApiClient::read_streaming_response(Conn& c, StreamCallback cb,
         // Re-check kill-switch preflight every 32 recv iterations so a
         // CLI DB-only revoke can interrupt a long provider read without
         // hitting SQLite on every byte.
-        if ((++preflight_ticks % 32) == 0 && !run_preflight()) {
-            hard_cancelled_.store(true, std::memory_order_release);
+        if ((++preflight_ticks % 32) == 0 && latch_sticky_cancel())
             return true;
-        }
         return false;
     };
 
@@ -1784,8 +1799,7 @@ stream_done:
 }
 
 ApiResponse ApiClient::stream(const ApiRequest& req, StreamCallback cb) {
-    if (hard_cancelled_.load(std::memory_order_acquire) || !run_preflight()) {
-        hard_cancelled_.store(true, std::memory_order_release);
+    if (latch_sticky_cancel()) {
         ApiResponse r;
         r.ok         = false;
         r.error_type = "cancelled";
@@ -1815,7 +1829,11 @@ ApiResponse ApiClient::stream(const ApiRequest& req, StreamCallback cb) {
     // proceed concurrently instead of blocking behind a single mutex.
     ConnLease lease(*this, prov.name);
     if (!lease.valid()) {
-        hard_cancelled_.store(true, std::memory_order_release);
+        // Same rule as complete(): a token-cancelled lease is this
+        // request only.  Unconditional hard_cancelled_ here is what
+        // re-broke #327 after the pool-wait unblock landed.  The bool
+        // is unused: every invalid lease is a cancel of this request.
+        (void)latch_sticky_cancel();
         if (breaker_) breaker_->record_abandoned(prov.name);
         ApiResponse r;
         r.ok         = false;
@@ -1829,8 +1847,7 @@ ApiResponse ApiClient::stream(const ApiRequest& req, StreamCallback cb) {
         // Same split as complete(): token cancel is per-request, not a
         // client-wide kill-switch.  Promoting it here aborts sibling
         // pane /loop streams that share this ApiClient.
-        if (hard_cancelled_.load(std::memory_order_acquire) || !run_preflight()) {
-            hard_cancelled_.store(true, std::memory_order_release);
+        if (latch_sticky_cancel()) {
             if (breaker_) breaker_->record_abandoned(prov.name);
             ApiResponse r;
             r.ok         = false;
