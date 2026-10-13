@@ -17,6 +17,7 @@
 
 #include <atomic>
 #include <cmath>
+#include <cstdlib>
 #include <mutex>
 #include <utility>
 
@@ -47,14 +48,33 @@ struct OnnxTextEmbedder::Impl {
     std::vector<std::string> input_names;
     WordPieceVocab vocab;
 
-    ~Impl() {
-        if (!api) return;
-        if (session) api->ReleaseSession(session);
-        if (memory) api->ReleaseMemoryInfo(memory);
-        if (options) api->ReleaseSessionOptions(options);
-        if (env) api->ReleaseEnv(env);
+    ~Impl() { release(); }
+
+    // Drop the session while ONNX Runtime's own mutexes are still alive.
+    // Releasing from a static destructor on macOS throws system_error
+    // ("mutex lock failed: Invalid argument") and aborts the process.
+    void release() noexcept {
+        try {
+            std::lock_guard<std::mutex> lock(mu);
+            ready.store(false, std::memory_order_release);
+            if (!api) return;
+            const OrtApi* ort = api;
+            if (session) ort->ReleaseSession(session);
+            if (memory) ort->ReleaseMemoryInfo(memory);
+            if (options) ort->ReleaseSessionOptions(options);
+            if (env) ort->ReleaseEnv(env);
+            session = nullptr;
+            memory = nullptr;
+            options = nullptr;
+            env = nullptr;
+            api = nullptr;
+        } catch (...) {}
     }
 };
+
+void OnnxTextEmbedder::release_at_exit() {
+    instance().impl_->release();
+}
 
 OnnxTextEmbedder::OnnxTextEmbedder() : impl_(std::make_unique<Impl>()) {}
 OnnxTextEmbedder::~OnnxTextEmbedder() = default;
@@ -149,6 +169,13 @@ bool OnnxTextEmbedder::prepare() {
 
     impl_->error.clear();
     impl_->ready.store(true, std::memory_order_release);
+    // Run before C++ static destructors so ReleaseSession happens while
+    // the runtime's internal mutexes still exist.
+    static bool exit_hook = false;
+    if (!exit_hook) {
+        exit_hook = true;
+        std::atexit(OnnxTextEmbedder::release_at_exit);
+    }
     return true;
 }
 

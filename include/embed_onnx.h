@@ -29,6 +29,7 @@ public:
 private:
     OnnxTextEmbedder();
     ~OnnxTextEmbedder();
+    static void release_at_exit();
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
