@@ -382,7 +382,9 @@ private:
     // Cancel (process-wide or the thread's RequestCancelScope token) aborts
     // the CV wait without taking a slot — valid() is false and conn() must
     // not be called.  Esc on a saturated pool used to hang until another
-    // lease returned.
+    // lease returned.  An invalid lease is not itself a hard-cancel:
+    // complete()/stream() latch hard_cancelled_ only for cancel() and a
+    // failing preflight, so a per-request token does not poison siblings.
     class ConnLease {
     public:
         ConnLease(ApiClient& owner, const std::string& provider);
@@ -405,12 +407,19 @@ private:
     std::atomic<int>  total_in_{0};
     std::atomic<int>  total_out_{0};
     std::atomic<bool> cancelled_{false};
-    // Sticky kill-switch: set by cancel(), honored by every stream()/complete()
-    // attempt, NOT cleared when those methods reset cancelled_ at entry.
+    // Sticky kill-switch: set by cancel() and by a failing preflight.
+    // Honored by every stream()/complete() attempt.  NOT cleared when those
+    // methods reset cancelled_ at entry, and NOT set when only the thread's
+    // CancelToken is cancelled — panes and /loop share one ApiClient (#327).
     std::atomic<bool> hard_cancelled_{false};
     std::mutex   preflight_mu_;
     PreflightFn  preflight_;
     [[nodiscard]] bool run_preflight();
+    // True when this attempt must stop for a client-wide reason.  Latches
+    // hard_cancelled_ if cancel() already set it or preflight fails.  A
+    // per-request CancelToken is not client-wide; callers check
+    // is_request_cancelled() separately and must not store the bit.
+    [[nodiscard]] bool latch_sticky_cancel();
 
     // Tokens currently installed via RequestCancelScope.  cancel() fans out
     // to every entry so a process-wide Esc still stops all in-flight turns.
