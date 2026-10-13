@@ -9,7 +9,9 @@
 
 #include <cmath>
 #include <cstdlib>
+#include <map>
 #include <string>
+#include <utility>
 
 using namespace arbiter;
 
@@ -418,7 +420,10 @@ TEST_CASE("shadow flag defaults off and does not touch the heuristic") {
     ::setenv("ARBITER_INTENT_SHADOW", "Luna", 1);
     CHECK(intent_shadow_luna_enabled());
 
-    ApiClient client({{"openrouter", "dummy-key-no-network"}});
+    // Named map, then move. `ApiClient({{...}})` is ambiguous on GCC 11
+    // (ubuntu-22.04) between the map constructor and the deleted copy.
+    std::map<std::string, std::string> keys{{"openrouter", "dummy-key-no-network"}};
+    ApiClient client(std::move(keys));
     Intent hint;
     hint.kind = "research";
     hint.source = "heuristic";

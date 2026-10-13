@@ -24,7 +24,9 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <sstream>
+#include <utility>
 #include <string>
 #include <vector>
 
@@ -199,7 +201,10 @@ int main(int argc, char** argv) {
     // Reload the key for the client. The earlier copy was cleared so a
     // failure path above would not keep it live.
     key = load_openrouter_key();
-    arbiter::ApiClient client({{"openrouter", key}});
+    // Named map, then move. `ApiClient({{...}})` is ambiguous on GCC 11
+    // between the map constructor and the deleted copy.
+    std::map<std::string, std::string> keys{{"openrouter", key}};
+    arbiter::ApiClient client(std::move(keys));
     key.assign(key.size(), '\0');
 
     arbiter::LunaLogprobBackend backend(client);
