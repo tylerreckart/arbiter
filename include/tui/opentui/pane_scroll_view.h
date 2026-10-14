@@ -89,9 +89,9 @@ public:
     void append_thinking(std::string_view delta,
                          bool new_block = false,
                          std::string_view agent_id = {});
-    // User submit echo: one-cell accent rail and a prompt mark, matching
-    // the input line. Plain text, wrapped on word boundaries. Long pastes
-    // collapse; Ctrl-O expands them.
+    // User submit echo: a prompt mark and text in the mark's color. No
+    // block. Plain text, wrapped on word boundaries. Long pastes collapse;
+    // Ctrl-O expands them.
     void append_user_echo(std::string_view text, bool new_block = true);
     void clear();
 
@@ -360,17 +360,17 @@ private:
         mutable std::vector<StyledLine> body_cache_;
     };
 
-    // User submit echo. One-cell accent rail plus a prompt mark, shared
-    // with the input line. No box. Plain text, wrapped on word boundaries.
-    // Long pastes collapse to kPreviewRows; Ctrl-O expands them.
+    // User submit echo. Prompt mark plus text in that mark's color. No
+    // block. Plain text, wrapped on word boundaries. Long pastes collapse
+    // to kPreviewRows; Ctrl-O expands them.
     struct UserEchoSegment final : Segment {
         std::string text_;
         bool expanded_ = false;
         mutable int wrap_cols_{80};
         static constexpr int kPreviewRows = 3;
         static constexpr int kExpandedCap = 40;
-        // Rail cell + prompt mark + one gap before the text.
-        static constexpr int kRailCols = 3;
+        // Prompt mark + one gap before the text.
+        static constexpr int kRailCols = 2;
 
         void set_text(std::string_view text);
         void toggle_expanded();

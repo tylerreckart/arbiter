@@ -1,7 +1,5 @@
 #include "tui/opentui/pane_input_editor.h"
 
-#include "styled_text.h"
-#include "tui/glyphs.h"
 #include "tui/opentui/engine.h"
 #include "tui/opentui/kitty_key_decode.h"
 #include "tui/opentui/mouse_decode.h"
@@ -23,8 +21,6 @@ namespace {
 // One cell for the box border; inner pad comes from layout.input_padding_x
 // (default 1) so readline matches the scroll inset.
 constexpr int kInputBorderCells = 1;
-// Accent rail + prompt mark + one gap. Shared with user-echo rows.
-constexpr int kInputRailCols = 3;
 constexpr int kBracketedPasteEvent = 0x100;
 
 constexpr std::uint8_t kWrapWord = 2;
@@ -384,8 +380,7 @@ void PaneInputEditor::sync_edit_buffer() {
 }
 
 int PaneInputEditor::input_lead_cols_locked() const {
-    if (rsearch_active_) return std::max(0, prompt_cols_);
-    return std::max(0, prompt_cols_) + kInputRailCols;
+    return std::max(0, prompt_cols_);
 }
 
 void PaneInputEditor::update_input_rows() {
@@ -450,10 +445,9 @@ void PaneInputEditor::draw(OpenTuiHandle frame, const TUI& tui, bool focused) co
 
     bind_viewport(tui, editor_w);
 
-    // EditBuffer defaults to a light-on-dark fg; pin theme primary so light
-    // presets stay readable.
+    // Typed text uses the prompt-mark color so the input matches the echo.
     if (const OpenTuiHandle tb = editBufferGetTextBuffer(edit_); tb != 0) {
-        textBufferSetDefaultFg(tb, d.text.primary.data());
+        textBufferSetDefaultFg(tb, d.content.accent_prompt.data());
     }
 
     bufferDrawEditorView(frame, view_,
@@ -461,28 +455,7 @@ void PaneInputEditor::draw(OpenTuiHandle frame, const TUI& tui, bool focused) co
                          static_cast<int32_t>(py));
 
     const std::string plain_prompt = plain_text(prompt_);
-    if (!rsearch_active_) {
-        const TuiRgba& rail = d.content.accent_prompt;
-        const int interior = std::max(1, tui.input_rows() - 2);
-        for (int i = 0; i < interior; ++i) {
-            bufferFillRect(frame,
-                           content_x,
-                           py + static_cast<std::uint32_t>(i),
-                           1,
-                           1,
-                           rail.data());
-        }
-        const char* mark = ">";
-        if (glyph_mode() == GlyphMode::Unicode
-            && arbiter::display_width("\u203A") == 1) {
-            mark = "\u203A";
-        }
-        draw_plain_text(frame, content_x + 1, py, mark, rail, &d.bg.scroll);
-        if (!plain_prompt.empty()) {
-            draw_plain_text(frame, content_x + static_cast<std::uint32_t>(kInputRailCols),
-                            py, plain_prompt, d.accent.primary);
-        }
-    } else if (!plain_prompt.empty()) {
+    if (!plain_prompt.empty()) {
         draw_plain_text(frame, content_x, py, plain_prompt, d.accent.primary);
     }
     if (cursor_visible_now()) {

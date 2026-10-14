@@ -313,7 +313,7 @@ TEST_CASE("UserEchoSegment wraps on word boundaries") {
     load_tui_design("");
     TUI tui;
     PaneScrollView view;
-    // cols 15 → content width 11, rail takes 3, body wraps at 8.
+    // cols 15 → content width 11, the mark takes 2, body wraps at 9.
     bind_view(view, tui, 15, 40);
 
     view.append_user_echo("hello agent");
