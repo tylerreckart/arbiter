@@ -88,6 +88,68 @@ if(NOT ARBITER_OPENTUI_LIBRARY)
         CACHE FILEPATH "OpenTUI shared library")
 endif()
 
+# --- Pinned downloads ----------------------------------------------------------
+# Digests match the bytes at these exact versions. A new OpenTUI or Zig
+# release needs a new pin (or -DARBITER_OPENTUI_SHA256 / -DARBITER_ZIG_SHA256).
+# Mismatch deletes the partial and fails configure — OpenTUI is required,
+# so this does not fall back the way the optional ONNX embed fetch does.
+
+include("${CMAKE_CURRENT_LIST_DIR}/VerifyDownload.cmake")
+
+set(ARBITER_OPENTUI_SHA256 "" CACHE STRING
+    "SHA256 override for the OpenTUI prebuilt tarball (required when the version is not pinned)")
+set(ARBITER_ZIG_SHA256 "" CACHE STRING
+    "SHA256 override for the Zig archive (required when the version is not pinned)")
+
+function(_arbiter_lookup_sha256 kind key out_var)
+    if(kind STREQUAL "opentui" AND NOT "${ARBITER_OPENTUI_SHA256}" STREQUAL "")
+        set("${out_var}" "${ARBITER_OPENTUI_SHA256}" PARENT_SCOPE)
+        return()
+    endif()
+    if(kind STREQUAL "zig" AND NOT "${ARBITER_ZIG_SHA256}" STREQUAL "")
+        set("${out_var}" "${ARBITER_ZIG_SHA256}" PARENT_SCOPE)
+        return()
+    endif()
+
+    set(_sha "")
+    if(kind STREQUAL "opentui")
+        if(key STREQUAL "core-darwin-arm64@0.4.2")
+            set(_sha "7d20003cafd2f24944851b21eefa11b9e1e3bda6111322dc93ac57df9e7dbc05")
+        elseif(key STREQUAL "core-darwin-x64@0.4.2")
+            set(_sha "bcea753a24fbeaf711ac3f95bb8e1190ef3ec6687f43bcb7d670c30f8eaaac0f")
+        elseif(key STREQUAL "core-win32-arm64@0.4.2")
+            set(_sha "f086763ce0341e7569a389eaa479a760918d8363a2c4813f837484b52e4f5390")
+        elseif(key STREQUAL "core-win32-x64@0.4.2")
+            set(_sha "a0c228a09637087e63fbcc0bcebbe93654be1e02e5fe77b618f541e85296fdf9")
+        elseif(key STREQUAL "core-linux-arm64@0.4.2")
+            set(_sha "2438b79abc5db661484b030c078e1c32ff0087be4d63407d6ae037a33c48f62e")
+        elseif(key STREQUAL "core-linux-x64@0.4.2")
+            set(_sha "1a4473663c4ff06cce1d660fee1673fc32bfe18f876420eac9b7a438970003c6")
+        endif()
+    elseif(kind STREQUAL "zig")
+        if(key STREQUAL "x86_64-linux@0.15.2")
+            set(_sha "02aa270f183da276e5b5920b1dac44a63f1a49e55050ebde3aecc9eb82f93239")
+        elseif(key STREQUAL "aarch64-linux@0.15.2")
+            set(_sha "958ed7d1e00d0ea76590d27666efbf7a932281b3d7ba0c6b01b0ff26498f667f")
+        elseif(key STREQUAL "aarch64-macos@0.15.2")
+            set(_sha "3cc2bab367e185cdfb27501c4b30b1b0653c28d9f73df8dc91488e66ece5fa6b")
+        elseif(key STREQUAL "x86_64-macos@0.15.2")
+            set(_sha "375b6909fc1495d16fc2c7db9538f707456bfc3373b14ee83fdd3e22b3d43f7f")
+        elseif(key STREQUAL "x86_64-windows@0.15.2")
+            set(_sha "3a0ed1e8799a2f8ce2a6e6290a9ff22e6906f8227865911fb7ddedc3cc14cb0c")
+        elseif(key STREQUAL "aarch64-windows@0.15.2")
+            set(_sha "b926465f8872bf983422257cd9ec248bb2b270996fbe8d57872cca13b56fc370")
+        endif()
+    endif()
+
+    if(_sha STREQUAL "")
+        message(FATAL_ERROR
+            "No SHA256 pin for ${kind} '${key}'. "
+            "Pass -DARBITER_OPENTUI_SHA256= or -DARBITER_ZIG_SHA256= for an unpinned version.")
+    endif()
+    set("${out_var}" "${_sha}" PARENT_SCOPE)
+endfunction()
+
 # --- Prebuilt npm fetch --------------------------------------------------------
 
 function(_arbiter_fetch_opentui_prebuilt npm_pkg tarball_name version dest_lib)
@@ -97,15 +159,12 @@ function(_arbiter_fetch_opentui_prebuilt npm_pkg tarball_name version dest_lib)
     set(_extract "${_staging}/extract")
     file(MAKE_DIRECTORY "${_staging}" "${_extract}" "${_opentui_staging}")
 
-    if(NOT EXISTS "${_archive}")
-        message(STATUS "Fetching OpenTUI prebuilt ${npm_pkg}@${version}")
-        file(DOWNLOAD "${_url}" "${_archive}" STATUS _dl_status SHOW_PROGRESS)
-        list(GET _dl_status 0 _dl_code)
-        if(NOT _dl_code EQUAL 0)
-            list(GET _dl_status 1 _dl_msg)
-            message(FATAL_ERROR "Failed to download ${npm_pkg}@${version}: ${_dl_msg}")
-        endif()
-    endif()
+    _arbiter_lookup_sha256("opentui" "${tarball_name}@${version}" _opentui_sha)
+    arbiter_fetch_pinned(
+        "${_url}"
+        "${_archive}"
+        "${_opentui_sha}"
+        "OpenTUI prebuilt ${npm_pkg}@${version}")
 
     file(ARCHIVE_EXTRACT INPUT "${_archive}" DESTINATION "${_extract}")
     set(_src "${_extract}/package/${_opentui_lib_basename}")
@@ -170,13 +229,12 @@ function(_arbiter_fetch_zig version target_triplet dest_dir zig_bin_out)
     set(_extract_root "${_staging}/extract")
     file(MAKE_DIRECTORY "${_staging}" "${_extract_root}")
 
-    message(STATUS "Fetching Zig ${version} from ${_url}")
-    file(DOWNLOAD "${_url}" "${_archive}" STATUS _dl_status)
-    list(GET _dl_status 0 _dl_code)
-    if(NOT _dl_code EQUAL 0)
-        list(GET _dl_status 1 _dl_msg)
-        message(FATAL_ERROR "Failed to download Zig ${version}: ${_dl_msg}")
-    endif()
+    _arbiter_lookup_sha256("zig" "${target_triplet}@${version}" _zig_sha)
+    arbiter_fetch_pinned(
+        "${_url}"
+        "${_archive}"
+        "${_zig_sha}"
+        "Zig ${version} (${target_triplet})")
 
     file(ARCHIVE_EXTRACT INPUT "${_archive}" DESTINATION "${_extract_root}")
     set(_extracted "${_extract_root}/zig-${target_triplet}-${version}")

@@ -55,12 +55,36 @@ on:
 
 # Default perms are read-only; the publish job grants itself `contents:
 # write` to upload assets to the GitHub Release of this repo.
+# `actions: read` lets the gate list ci.yml runs for this commit.
 permissions:
   contents: read
+  actions: read
 
 jobs:
+  # Fail closed: a tag whose commit never had a successful CI workflow
+  # does not build or publish.  This is the same check version.yml runs
+  # before it cuts the tag.
+  ci-passed:
+    name: CI passed on this commit
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Require successful CI workflow
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euxo pipefail
+          chmod +x .github/scripts/require_ci_success.sh
+          .github/scripts/require_ci_success.sh "$(git rev-parse HEAD)"
+
   build:
     name: Build ${{ matrix.os_slug }}-${{ matrix.arch_slug }}
+    needs: ci-passed
     runs-on: ${{ matrix.runs_on }}
     timeout-minutes: 30
     strategy:

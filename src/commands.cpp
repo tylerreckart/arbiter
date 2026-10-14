@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <initializer_list>
 #include <ctime>
 #include <cwchar>
 #include <fstream>
@@ -20,13 +21,19 @@
 #include <curl/curl.h>
 
 #include <fcntl.h>
+#include <poll.h>
+#include <signal.h>
+#include <spawn.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <unistd.h>
+
+extern char** environ;
 
 namespace fs = std::filesystem;
 
@@ -1324,46 +1331,326 @@ std::string cmd_fetch(const std::string& url) {
 }
 
 // ---------------------------------------------------------------------------
-// cmd_exec
+// cmd_exec — argv by default; a shell only after confirmation
 // ---------------------------------------------------------------------------
 
-std::string cmd_exec(const std::string& command, bool confirmed) {
+namespace {
+
+std::string ascii_lower_copy(std::string s) {
+    for (char& c : s) {
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + 32);
+    }
+    return s;
+}
+
+std::string exec_basename(const std::string& path) {
+    const auto slash = path.find_last_of('/');
+    return ascii_lower_copy(slash == std::string::npos ? path
+                                                       : path.substr(slash + 1));
+}
+
+bool is_unquoted_shell_meta(char c) {
+    switch (c) {
+        case '|': case '&': case ';': case '<': case '>':
+        case '`': case '$': case '(': case ')': case '\\':
+        case '*': case '?': case '[': case '{':
+        case '\n': case '\r':
+            return true;
+        default:
+            return false;
+    }
+}
+
+enum class ExecParse { Argv, NeedsShell };
+
+// Split `cmd` into argv the way a shell would for a command with no
+// expansions. Unquoted metacharacters, unclosed quotes, and expansions
+// inside double quotes return NeedsShell so the caller can refuse them
+// until a human confirms and /bin/sh runs the original string.
+ExecParse parse_exec_argv(const std::string& cmd, std::vector<std::string>& argv) {
+    argv.clear();
+    const size_t n = cmd.size();
+    size_t i = 0;
+    while (i < n) {
+        while (i < n && (cmd[i] == ' ' || cmd[i] == '\t')) ++i;
+        if (i >= n) break;
+        if (cmd[i] == '#' || cmd[i] == '~') return ExecParse::NeedsShell;
+
+        std::string word;
+        bool started = false;
+        while (i < n && cmd[i] != ' ' && cmd[i] != '\t') {
+            const char c = cmd[i];
+            if (c == '\'') {
+                started = true;
+                ++i;
+                bool closed = false;
+                while (i < n) {
+                    if (cmd[i] == '\'') { ++i; closed = true; break; }
+                    word.push_back(cmd[i]);
+                    ++i;
+                }
+                if (!closed) return ExecParse::NeedsShell;
+                continue;
+            }
+            if (c == '"') {
+                started = true;
+                ++i;
+                bool closed = false;
+                while (i < n) {
+                    if (cmd[i] == '"') { ++i; closed = true; break; }
+                    const char d = cmd[i];
+                    if (d == '$' || d == '`' || d == '\\' || d == '\n' || d == '\r')
+                        return ExecParse::NeedsShell;
+                    word.push_back(d);
+                    ++i;
+                }
+                if (!closed) return ExecParse::NeedsShell;
+                continue;
+            }
+            if (is_unquoted_shell_meta(c)) return ExecParse::NeedsShell;
+            started = true;
+            word.push_back(c);
+            ++i;
+        }
+        if (started) argv.push_back(std::move(word));
+    }
+    return argv.empty() ? ExecParse::NeedsShell : ExecParse::Argv;
+}
+
+bool name_is(const std::string& base, const char* name) {
+    const size_t n = std::strlen(name);
+    if (base.size() < n || base.compare(0, n, name) != 0) return false;
+    if (base.size() == n) return true;
+    const char c = base[n];
+    return (c >= '0' && c <= '9') || c == '.' || c == '-';
+}
+
+bool has_flag(const std::vector<std::string>& argv,
+              std::initializer_list<const char*> flags) {
+    for (size_t i = 1; i < argv.size(); ++i) {
+        const std::string a = ascii_lower_copy(argv[i]);
+        for (const char* flag : flags) {
+            if (a == flag) return true;
+            // Glued short options: -cCMD, -eCODE.
+            if (flag[0] == '-' && flag[1] != '\0' && flag[2] == '\0' &&
+                a.size() > 2 && a[0] == '-' && a[1] == flag[1] && a[2] != '-')
+                return true;
+        }
+    }
+    return false;
+}
+
+bool short_cluster_has(const std::string& arg, char bit) {
+    if (arg.size() < 2 || arg[0] != '-' || arg[1] == '-') return false;
+    return arg.find(bit) != std::string::npos;
+}
+
+bool argv_is_destructive(const std::vector<std::string>& argv) {
+    if (argv.empty()) return true;
+    const std::string base = exec_basename(argv[0]);
+
+    static const char* kAlways[] = {
+        "rm", "rmdir", "unlink", "shred", "truncate", "dd",
+        "sudo", "doas", "su", "chmod", "chown", "chgrp",
+        "wipefs", "fdisk", "parted", "tee",
+        "env", "xargs", "nice", "nohup", "stdbuf", "ionice", "busybox",
+    };
+    for (const char* name : kAlways) {
+        if (base == name) return true;
+    }
+    if (base.rfind("mkfs", 0) == 0) return true;
+
+    const bool shell = base == "sh" || base == "bash" || base == "dash" ||
+                       base == "zsh" || base == "ksh" || base == "ash" ||
+                       base == "csh" || base == "tcsh" || base == "fish";
+    if (shell && has_flag(argv, {"-c", "--command"})) return true;
+
+    const bool interp =
+        name_is(base, "python") || name_is(base, "perl") || name_is(base, "ruby") ||
+        name_is(base, "node") || base == "nodejs" || name_is(base, "php") ||
+        name_is(base, "lua") || base == "deno" || base == "bun" ||
+        base == "osascript" || base == "awk" || base == "gawk" || base == "nawk";
+    if (interp && has_flag(argv, {"-c", "-e", "--eval", "--command", "--source"}))
+        return true;
+    if (name_is(base, "php") && has_flag(argv, {"-r"})) return true;
+
+    if (base == "curl" || base == "wget") {
+        for (size_t i = 1; i < argv.size(); ++i) {
+            const std::string a = ascii_lower_copy(argv[i]);
+            if (a == "-o" || a == "-O" || a == "--output" ||
+                a.rfind("--output=", 0) == 0 ||
+                (a.size() > 2 && a[0] == '-' && (a[1] == 'o' || a[1] == 'O') && a[2] != '-'))
+                return true;
+        }
+    }
+
+    if (base == "find") {
+        for (size_t i = 1; i < argv.size(); ++i) {
+            const std::string a = ascii_lower_copy(argv[i]);
+            if (a == "-delete" || a == "-exec" || a == "-execdir" ||
+                a == "-ok" || a == "-okdir" || a == "-fprint" ||
+                a == "-fls" || a == "-fprintf")
+                return true;
+        }
+    }
+
+    if (base == "git") {
+        size_t i = 1;
+        while (i < argv.size()) {
+            const std::string a = ascii_lower_copy(argv[i]);
+            if (a == "-c" || a == "-C" || a == "--git-dir" || a == "--work-tree") {
+                i += 2;
+                continue;
+            }
+            if (a.rfind("-c", 0) == 0 || a.rfind("--git-dir=", 0) == 0 ||
+                a.rfind("--work-tree=", 0) == 0) {
+                ++i;
+                continue;
+            }
+            if (!a.empty() && a[0] == '-') { ++i; continue; }
+            break;
+        }
+        if (i >= argv.size()) return false;
+        const std::string sub = ascii_lower_copy(argv[i]);
+        for (size_t j = i + 1; j < argv.size(); ++j) {
+            const std::string a = ascii_lower_copy(argv[j]);
+            if (sub == "reset" && a == "--hard") return true;
+            if (sub == "clean" &&
+                (a == "--force" || a.rfind("--force", 0) == 0 || short_cluster_has(a, 'f')))
+                return true;
+            if (sub == "push" &&
+                (a == "-f" || a == "--force" || a.rfind("--force", 0) == 0 ||
+                 short_cluster_has(a, 'f')))
+                return true;
+            if (sub == "branch" && (a == "-d" || a == "-D" || a == "--delete"))
+                return true;
+            if (sub == "checkout" && a == "--") return true;
+            if (sub == "restore" && a == ".") return true;
+        }
+    }
+    return false;
+}
+
+std::string capture_spawn(const std::vector<std::string>& argv) {
     static constexpr size_t kMaxOutput = 32768;
+    if (argv.empty() || argv[0].empty()) return "ERR: empty command";
 
-    if (command.empty()) return "ERR: empty command";
+    int fds[2] = {-1, -1};
+    if (::pipe(fds) != 0)
+        return std::string("ERR: pipe failed: ") + std::strerror(errno);
 
-    if (!confirmed && is_destructive_exec(command))
-        return "ERR: destructive command blocked — requires confirmation";
+    posix_spawn_file_actions_t actions;
+    posix_spawnattr_t attr;
+    if (posix_spawn_file_actions_init(&actions) != 0 ||
+        posix_spawnattr_init(&attr) != 0) {
+        ::close(fds[0]);
+        ::close(fds[1]);
+        return "ERR: posix_spawn init failed";
+    }
+    posix_spawn_file_actions_adddup2(&actions, fds[1], STDOUT_FILENO);
+    posix_spawn_file_actions_adddup2(&actions, fds[1], STDERR_FILENO);
+    posix_spawn_file_actions_addclose(&actions, fds[0]);
+    posix_spawn_file_actions_addclose(&actions, fds[1]);
+    // Own process group so a truncated pipeline can be killed together.
+    posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETPGROUP);
+    posix_spawnattr_setpgroup(&attr, 0);
 
-    // Capture stdout and stderr together
-    std::string shell_cmd = command + " 2>&1";
-    FILE* pipe = popen(shell_cmd.c_str(), "r");
-    if (!pipe) return "ERR: popen failed";
+    std::vector<char*> cargv;
+    cargv.reserve(argv.size() + 1);
+    for (const auto& arg : argv)
+        cargv.push_back(const_cast<char*>(arg.c_str()));
+    cargv.push_back(nullptr);
+
+    pid_t pid = 0;
+    const int rc = ::posix_spawnp(&pid, cargv[0], &actions, &attr,
+                                  cargv.data(), environ);
+    posix_spawn_file_actions_destroy(&actions);
+    posix_spawnattr_destroy(&attr);
+    ::close(fds[1]);
+    if (rc != 0) {
+        ::close(fds[0]);
+        return std::string("ERR: exec failed: ") + std::strerror(rc);
+    }
 
     std::string output;
     output.reserve(4096);
     char buf[4096];
-    while (fgets(buf, sizeof(buf), pipe)) {
-        output += buf;
+    bool truncated = false;
+    bool cancelled = false;
+    for (;;) {
+        if (command_dispatch_cancelled()) {
+            ::kill(-pid, SIGKILL);
+            cancelled = true;
+            break;
+        }
+        struct pollfd pfd{};
+        pfd.fd = fds[0];
+        pfd.events = POLLIN;
+        const int pr = ::poll(&pfd, 1, 200);
+        if (pr < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (pr == 0) continue;
+        const ssize_t n = ::read(fds[0], buf, sizeof(buf));
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (n == 0) break;
+        output.append(buf, static_cast<size_t>(n));
         if (output.size() > kMaxOutput) {
             output.resize(kMaxOutput);
             output += "\n... [truncated at 32 KB]";
+            truncated = true;
+            ::kill(-pid, SIGKILL);
             break;
         }
     }
-    int status = pclose(pipe);
+    ::close(fds[0]);
 
-    // Trim trailing newlines
+    int status = 0;
+    while (::waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+
     while (!output.empty() && output.back() == '\n')
         output.pop_back();
-
-    if (output.empty()) output = "(no output)";
-
-    if (status != 0) {
-        output += "\n[exit " + std::to_string(status) + "]";
+    if (cancelled) {
+        if (output.empty()) output = "ERR: request cancelled";
+        else output += "\nERR: request cancelled";
+        return output;
     }
-
+    if (output.empty()) output = "(no output)";
+    if (!truncated) {
+        if (WIFEXITED(status)) {
+            const int code = WEXITSTATUS(status);
+            if (code != 0)
+                output += "\n[exit " + std::to_string(code) + "]";
+        } else if (WIFSIGNALED(status)) {
+            output += "\n[exit signal " + std::to_string(WTERMSIG(status)) + "]";
+        }
+    }
     return output;
+}
+
+}  // namespace
+
+std::string cmd_exec(const std::string& command, bool confirmed) {
+    if (command.empty() ||
+        command.find_first_not_of(" \t") == std::string::npos)
+        return "ERR: empty command";
+
+    std::vector<std::string> argv;
+    const bool needs_shell = parse_exec_argv(command, argv) == ExecParse::NeedsShell;
+    const bool destructive = needs_shell || argv_is_destructive(argv);
+    if (!confirmed && destructive)
+        return "ERR: destructive command blocked — requires confirmation";
+
+    if (needs_shell) {
+        // Confirmed shell features keep the historical popen contract:
+        // the original string, with stderr folded into stdout.
+        return capture_spawn({"/bin/sh", "-c", command + " 2>&1"});
+    }
+    return capture_spawn(argv);
 }
 
 // ---------------------------------------------------------------------------
@@ -1786,86 +2073,14 @@ std::string cmd_mem_shared_clear(const std::string& memory_dir) {
 // execute_agent_commands
 // ---------------------------------------------------------------------------
 
-// Conservative pattern check — matches commonly-destructive shell forms.
-// Expanding this is cheap; the callsite bails to a y/N prompt on a match.
+// Shell syntax, destructive argv, and inline interpreter eval.  Quote-aware
+// so `echo 'a|b'` stays a single argv and is not a pipe.  The dispatcher
+// confirms on true; cmd_exec refuses to spawn until confirmed=true.
 bool is_destructive_exec(const std::string& cmd) {
-    // Shell-meta bypass catch-all.  Without this, an agent can sneak a
-    // destructive call past the token scan via command substitution
-    // (`$(rm -rf ~)`, backticks), chaining (`true; rm -rf ~`), or a literal
-    // newline.  Tripping any of these routes the command through the
-    // confirm() gate — agents can still use pipes/redirects after the user
-    // approves, but the silent bypass vector is closed.
-    for (size_t i = 0; i < cmd.size(); ++i) {
-        char c = cmd[i];
-        if (c == '`' || c == '\n' || c == '\r') return true;
-        if (c == '$' && i + 1 < cmd.size() && cmd[i + 1] == '(') return true;
-        if (c == ';') return true;
-        if ((c == '&' || c == '|') && i + 1 < cmd.size() && cmd[i + 1] == c)
-            return true;  // && or ||
-    }
-
-    // Normalise: lowercase + collapse whitespace, preserve literal chars like '>'.
-    std::string s;
-    s.reserve(cmd.size());
-    bool prev_space = true;
-    for (char c : cmd) {
-        char lc = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
-        if (lc == ' ' || lc == '\t') {
-            if (!prev_space) { s += ' '; prev_space = true; }
-        } else {
-            s += lc;
-            prev_space = false;
-        }
-    }
-    if (!s.empty() && s.back() == ' ') s.pop_back();
-    // Pad with spaces so word-boundary checks (" rm ") hit tokens at the ends.
-    std::string padded = " " + s + " ";
-
-    auto has = [&](const char* needle) {
-        return padded.find(needle) != std::string::npos;
-    };
-
-    // Destructive filesystem + process tools.  Path-qualified binaries
-    // (`/usr/bin/rm`, `./rm`) miss the space-padded word check, so also
-    // match a leading slash before the token.
-    if (has(" rm ") || has("/rm ") || has(" rmdir ") || has("/rmdir ") ||
-        has(" unlink ") || has("/unlink ") ||
-        has(" shred ") || has("/shred ") || has(" truncate ") ||
-        has(" dd ") || has("/dd ") || has(" mkfs") || has(" wipefs") ||
-        has(" fdisk ") || has(" parted ") ||
-        has(" chmod -r") || has(" chown -r")) return true;
-
-    // Privilege escalation — anything can happen past sudo.
-    if (has(" sudo ") || has("/sudo ") || has(" doas ") || has("/doas "))
-        return true;
-
-    // Brace expansion can hide a destructive argv (`{rm,-rf,/tmp/x}`).
-    if (s.find('{') != std::string::npos && s.find(',') != std::string::npos)
-        return true;
-
-    // Shell redirection overwrites/appends files.  Gate any `>` — not
-    // only space-padded ` > ` — so `echo x>file` cannot skip confirm.
-    if (s.find('>') != std::string::npos) return true;
-
-    // Piped commands reach a second tool whose token isn't at the command
-    // head.  Treat any pipe as confirm-worthy, including tight `a|b`.
-    if (s.find('|') != std::string::npos) return true;
-
-    // find -delete / find -exec rm …
-    if (has(" find ") && (has(" -delete") ||
-                          padded.find(" -exec rm") != std::string::npos ||
-                          padded.find(" -execdir rm") != std::string::npos))
-        return true;
-
-    // Git operations that rewrite or discard history.
-    if (has(" git ")) {
-        if (has(" reset --hard") || has(" clean -f") ||
-            has(" push --force") || has(" push -f ") ||
-            has(" branch -d") || has(" branch -D") ||
-            has(" checkout --") || has(" restore .")) return true;
-    }
-
-    return false;
+    if (cmd.empty()) return false;
+    std::vector<std::string> argv;
+    if (parse_exec_argv(cmd, argv) == ExecParse::NeedsShell) return true;
+    return argv_is_destructive(argv);
 }
 
 bool is_tool_result_failure(const std::string& block) {
@@ -1995,7 +2210,8 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                                    ExecInvoker      exec_invoker,
                                    const std::vector<std::string>& capabilities,
                                    std::vector<ContentPart>* out_image_parts,
-                                   WorkspaceRootProvider workspace_root_provider) {
+                                   WorkspaceRootProvider workspace_root_provider,
+                                   bool host_exec_surface) {
     std::ostringstream out;
     out << "\n";
 
@@ -2885,12 +3101,16 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                          "require the shell.\n";
                 cache_result = false;
             } else if (confirm && (!exec_invoker || is_destructive_exec(cmd.args))) {
-                // Host /exec: always confirm with a clear unsandboxed danger
-                // label (Phase 2).  Sandboxed /exec only confirms destructive
-                // patterns — the container is the safety boundary.
+                // No invoker: every host command confirms.  An invoker is
+                // either the Docker sandbox or --allow-host-exec; only
+                // destructive commands (shell syntax, rm, interpreter
+                // eval, …) confirm.  The API callback denies those.  The
+                // TUI callback prompts, and the host invoker then runs
+                // them with confirmed=true.
                 ConfirmRequest req;
                 req.action = "exec";
-                if (!exec_invoker) {
+                const bool host_surface = !exec_invoker || host_exec_surface;
+                if (host_surface) {
                     req.summary = is_destructive_exec(cmd.args)
                         ? "HOST SHELL (unsandboxed) — destructive command"
                         : "HOST SHELL (unsandboxed)";

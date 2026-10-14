@@ -62,13 +62,16 @@ Older tags do **not** receive backports.
 Several capabilities are documented as unsandboxed by design. Reports
 that simply demonstrate them are not vulnerabilities:
 
-- **`/exec` is unsandboxed in the terminal client by default** — agents
-  reach through the user's shell with the user's permissions after a
-  `HOST SHELL (unsandboxed)` confirm card. Set `ARBITER_SANDBOX_IMAGE` to
-  opt into the same Docker sandbox as `--api`. The HTTP API
-  (`arbiter --api`) disables `/exec` by default
-  (`ApiServerOptions::exec_disabled = true`) and an attempt returns an
-  `ERR:` tool result to the agent.
+- **`/exec` is unsandboxed in the terminal client by default** — plain
+  argv runs directly with the user's permissions (`posix_spawn`, no
+  shell). Pipes, redirects, substitution, and inline interpreter eval
+  (`bash -c`, `python -c`, and similar) require a
+  `HOST SHELL (unsandboxed)` confirm card, and are refused when the
+  caller cannot approve them. Set `ARBITER_SANDBOX_IMAGE` to opt into
+  the same Docker sandbox as `--api`. The HTTP API (`arbiter --api`)
+  disables `/exec` by default (`ApiServerOptions::exec_disabled = true`);
+  `--allow-host-exec` re-enables the host path above. A disabled
+  attempt returns an `ERR:` tool result to the agent.
 - **Sandboxed `/exec` (opt-in via `ARBITER_SANDBOX_IMAGE`, since
   0.5.0)** — when enabled, `/exec` runs inside a per-tenant Docker
   container with `--network=none --read-only`, a bind-mounted
