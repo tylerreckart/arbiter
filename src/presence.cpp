@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstring>
 #include <fnmatch.h>
 #include <sstream>
 #include <string>
@@ -50,6 +51,109 @@ std::string first_tag_body(const std::string& text, const char* tag) {
     auto b = lower.find(close_l, body);
     if (b == std::string::npos) return {};
     return trim_copy(std::string_view(text).substr(body, b - body));
+}
+
+void replace_all(std::string& s, const std::string& from, const std::string& to) {
+    if (from.empty()) return;
+    size_t pos = 0;
+    while ((pos = s.find(from, pos)) != std::string::npos) {
+        s.replace(pos, from.size(), to);
+        pos += to.size();
+    }
+}
+
+// Keep aligned with starts_with_writ in commands.cpp.  Presence notes are
+// untrusted model text; a line that is itself a writ must not survive
+// into the working agent's tool envelope.
+bool presence_line_is_writ(std::string_view line) {
+    size_t i = 0;
+    while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) ++i;
+    line.remove_prefix(i);
+    static const char* kWritPrefixes[] = {
+        "/todo", "/endtodo",
+        "/agent ", "/parallel", "/endparallel", "/pane ",
+        "/write", "/endwrite",
+        "/read ", "/list", "/map",
+        "/search ", "/fetch ", "/browse ",
+        "/exec ",
+        "/mem", "/endmem",
+        "/mcp ",
+        "/a2a", "/schedule",
+        "/lesson", "/endlesson",
+        "/advise", "/help",
+    };
+    for (const char* p : kWritPrefixes) {
+        const size_t n = std::strlen(p);
+        if (line.size() >= n && line.compare(0, n, p) == 0) return true;
+        if (n > 0 && p[n - 1] == ' ' &&
+            line.size() == n - 1 && line.compare(0, n - 1, p, n - 1) == 0)
+            return true;
+    }
+    return false;
+}
+
+// Single header line.  Brackets and controls would let a watcher name
+// close the block and plant a slash command under it.
+std::string sanitize_presence_name(const std::string& raw) {
+    std::string out;
+    bool spaced = false;
+    for (unsigned char c : raw) {
+        // Drop framing, controls, and slashes so a name cannot close the
+        // block or carry a `/exec` token into the header line.
+        if (c < 0x20 || c == 0x7f || c == '[' || c == ']' || c == '/' || c == '\\') {
+            spaced = true;
+            continue;
+        }
+        if (c == ' ' || c == '\t') {
+            spaced = true;
+            continue;
+        }
+        if (spaced && !out.empty()) out.push_back(' ');
+        spaced = false;
+        out.push_back(static_cast<char>(c));
+        if (out.size() >= 64) break;
+    }
+    if (out.empty()) return "presence";
+    return out;
+}
+
+// Drop controls, break `[END PRESENCE]` / `[/exec` framing, and turn a
+// leading writ slash into a fullwidth solidus so a copied line is not a
+// command the parser accepts.
+std::string neutralize_presence_note(const std::string& note) {
+    std::string cleaned;
+    cleaned.reserve(note.size());
+    for (unsigned char c : note) {
+        if (c == '\0' || c == '\r' || c == 0x7f) continue;
+        if (c < 0x20 && c != '\n' && c != '\t') continue;
+        cleaned.push_back(static_cast<char>(c));
+    }
+    const std::string zwsp = "\xE2\x80\x8B";
+    replace_all(cleaned, "[END PRESENCE]", "[END" + zwsp + " PRESENCE]");
+    replace_all(cleaned, "[PRESENCE:", "[PRESENCE" + zwsp + ":");
+    replace_all(cleaned, "[/", "[" + zwsp + "/");
+    replace_all(cleaned, "[END ", "[END" + zwsp + " ");
+
+    std::string out;
+    size_t start = 0;
+    while (start <= cleaned.size()) {
+        const auto nl = cleaned.find('\n', start);
+        std::string line = cleaned.substr(
+            start, nl == std::string::npos ? std::string::npos : nl - start);
+        if (presence_line_is_writ(line)) {
+            size_t i = 0;
+            while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) ++i;
+            if (i < line.size() && line[i] == '/')
+                line.replace(i, 1, "\xEF\xBC\x8F");  // U+FF0F
+        }
+        out += line;
+        if (nl == std::string::npos) break;
+        out.push_back('\n');
+        start = nl + 1;
+        if (start > cleaned.size()) break;
+        if (start == cleaned.size()) break;
+    }
+    return out;
 }
 
 void truncate_field(std::string& field, size_t budget) {
@@ -162,10 +266,11 @@ PresenceOutput parse_presence_signal(const std::string& reply) {
 
 std::string format_presence_injection(const std::string& watcher_name,
                                       const std::string& note) {
-    std::string name = watcher_name.empty() ? "presence" : watcher_name;
+    const std::string name = sanitize_presence_name(watcher_name);
+    const std::string body = neutralize_presence_note(note);
     std::ostringstream ss;
     ss << "[PRESENCE: " << name << "]\n"
-       << note << "\n"
+       << body << "\n"
        << "[END PRESENCE]\n\n";
     return ss.str();
 }

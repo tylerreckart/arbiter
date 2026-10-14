@@ -53,9 +53,11 @@ FetchedResource cmd_fetch_bytes(const std::string& url, int64_t max_bytes);
 // provider.  Empty input → empty output.
 std::string base64_encode(const std::string& bytes);
 
-// Execute a shell command. Returns stdout+stderr, or "ERR: ..." on failure.
-// Output is capped at 32 KB. Exit status appended if non-zero.
-// Destructive commands are blocked unless confirmed=true (gate already passed).
+// Run a host command. Plain argv (no shell syntax) is posix_spawnp'd.
+// Pipes, redirects, substitution, globs, and other shell syntax run via
+// /bin/sh only when confirmed=true. Destructive argv (rm, sudo, inline
+// interpreter eval, …) is refused unless confirmed. Output is stdout+stderr,
+// capped at 32 KB. A non-zero exit is appended as "[exit N]".
 std::string cmd_exec(const std::string& command, bool confirmed = false);
 
 // Sandbox-backed /exec invoker. When null, /exec falls back to cmd_exec.
@@ -427,9 +429,11 @@ using SchedulerInvoker = std::function<std::string(const std::string& kind,
                                                     const std::string& args,
                                                     const std::string& caller_agent_id)>;
 
-// True if `cmd` matches a pattern we always want to confirm before exec'ing
-// (rm, rm -rf, redirects, sudo, mkfs, git force-push, find -delete, etc.).
-// Conservative — misses creative destruction, but catches the common footguns.
+// True when `cmd` must be confirmed before it runs: shell syntax (pipes,
+// redirects, `$()`, globs, …), destructive argv (rm, sudo, mkfs, git
+// force-push, find -delete, tee, …), or an interpreter eval flag
+// (`bash -c`, `python -c`, `perl -e`, `| sh`). Quote-aware — a quoted
+// metacharacter is data, not a shell feature.
 bool is_destructive_exec(const std::string& cmd);
 
 // Optional per-thread cancel poll for execute_agent_commands.  Orchestrator
@@ -520,7 +524,12 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                                    // resolve under the returned directory
                                    // (conversation-scoped in the TUI).  Null
                                    // keeps process-cwd behaviour for CLI.
-                                   WorkspaceRootProvider workspace_root_provider = nullptr);
+                                   WorkspaceRootProvider workspace_root_provider = nullptr,
+                                   // True when `exec_invoker` is the host
+                                   // shell (--allow-host-exec / TUI), not
+                                   // the Docker sandbox.  Selects the
+                                   // HOST SHELL confirm label.
+                                   bool host_exec_surface = false);
 
 // True if a tool-result block indicates the command failed.  Pattern-matches
 // the ERR:/UPSTREAM FAILED/SKIPPED framing used throughout execute_agent_commands.

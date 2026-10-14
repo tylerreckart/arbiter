@@ -1534,7 +1534,8 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
                                               exec_invoker_cb_,
                                               agent_ptr->config().capabilities,
                                               nullptr,
-                                              workspace_root_provider_cb_);
+                                              workspace_root_provider_cb_,
+                                              host_exec_surface_);
         }
 
         // Loop detection — same helper as send_streaming.  A repeated
@@ -2127,7 +2128,8 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
                                                   exec_invoker_cb_,
                                                   agent_ptr->config().capabilities,
                                                   &image_parts,
-                                                  workspace_root_provider_cb_);
+                                                  workspace_root_provider_cb_,
+                                                  host_exec_surface_);
             }
             // Same loop detector as run_dispatch, before presence notes
             // so the warning sits under any CONTEXT preamble.
@@ -2544,16 +2546,17 @@ Orchestrator::PlanResult Orchestrator::execute_plan(
                                " (direct): /exec is disabled in this context";
                 return result;
             }
-            // Mirror agent /exec gating: host exec always confirms; sandboxed
-            // exec only confirms destructive patterns.
+            // Same gate as agent /exec: an invoker (sandbox or host opt-in)
+            // confirms only destructive commands; no invoker confirms all.
             if (confirm_cb_ &&
                 (!exec_invoker_cb_ || is_destructive_exec(task_msg))) {
                 ConfirmRequest req;
                 req.action  = "exec";
                 req.target  = task_msg;
-                req.summary = exec_invoker_cb_
-                    ? "plan direct phase — destructive command"
-                    : "plan direct phase — HOST SHELL (unsandboxed)";
+                if (!exec_invoker_cb_ || host_exec_surface_)
+                    req.summary = "plan direct phase — HOST SHELL (unsandboxed)";
+                else
+                    req.summary = "plan direct phase — sandboxed shell — destructive command";
                 req.preview_lines.push_back(task_msg.substr(0, 200));
                 if (!confirm_cb_(req)) {
                     result.ok = false;
@@ -2654,7 +2657,8 @@ std::string Orchestrator::execute_slash_command(const std::string& line,
                                   exec_invoker_cb_,
                                   agent_ptr->config().capabilities,
                                   nullptr,
-                                  workspace_root_provider_cb_);
+                                  workspace_root_provider_cb_,
+                                  host_exec_surface_);
 }
 
 void Orchestrator::fire_history_checkpoint() {

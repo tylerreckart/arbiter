@@ -75,7 +75,7 @@ See [`docs/tui/sessions.md`](../tui/sessions.md).
 | `--allow-host-exec`          | Allow host `/exec` when running `arbiter --api` (unsafe; prefer the Docker sandbox). |
 | `ARBITER_ALLOW_HOST_EXEC`    | Same as `--allow-host-exec` when set to a non-empty, non-`0` value. |
 
-The API server keeps `/exec` **disabled** unless the per-tenant Docker sandbox is configured (below) or host exec is explicitly allowed. In the TUI, host `/exec` always shows a `HOST SHELL (unsandboxed)` permission card when a confirm callback is wired. Setting `ARBITER_SANDBOX_IMAGE` in the TUI opts into the same Docker sandbox path as `--api`. If the image is set but the sandbox fails its usability check, `/exec` returns `ERR` (no silent host fallback) until the image is fixed or the env var is unset.
+The API server keeps `/exec` **disabled** unless the per-tenant Docker sandbox is configured (below) or host exec is explicitly allowed. In the TUI, plain argv (`git status`, `ls`, `python3 script.py`) runs directly, with no shell. Pipes, redirects, substitution, and inline eval show a `HOST SHELL (unsandboxed) — destructive command` card; the API's confirm callback denies those instead of prompting. Setting `ARBITER_SANDBOX_IMAGE` in the TUI opts into the same Docker sandbox path as `--api`. If the image is set but the sandbox fails its usability check, `/exec` returns `ERR` (no silent host fallback) until the image is fixed or the env var is unset.
 
 ## Per-tenant sandbox
 
