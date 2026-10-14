@@ -125,6 +125,13 @@ std::string pick_master_model_default(
     return {};
 }
 
+void remember_advisor(const AdvisorGateOutput& sig) {
+    const char* verdict = "halt";
+    if (sig.kind == AdvisorGateOutput::Kind::Continue) verdict = "continue";
+    else if (sig.kind == AdvisorGateOutput::Kind::Redirect) verdict = "redirect";
+    note_intent_advisor_for_turn(verdict);
+}
+
 }  // namespace
 
 Orchestrator::Orchestrator(std::map<std::string, std::string> api_keys)
@@ -915,6 +922,7 @@ Orchestrator::apply_intent_ingress(const std::string& agent_id,
                                    bool fresh_ingress) {
     IntentIngress result;
     result.agent_id = agent_id.empty() ? "index" : agent_id;
+    intent_route_clear_turn();
     clear_ingress_prefetch();
 
     const Constitution* cfg_src = &index_master_->config();
@@ -1015,6 +1023,7 @@ Orchestrator::apply_intent_ingress(const std::string& agent_id,
         try {
             IntentRouteOutcome outcome = route_intent_live(
                 in, icfg, route_cfg, intent_route_cache_, luna, load, embed);
+            intent_route_bind_turn(&intent_route_cache_, outcome.request_hash);
             result.intent = std::move(outcome.intent);
             result.applied = intent_route_should_apply(
                                  icfg, result.intent, in.requested_agent, fresh_ingress) &&
@@ -1083,9 +1092,8 @@ Orchestrator::apply_intent_ingress(const std::string& agent_id,
         try { intent_cb_(ev); } catch (...) {}
     }
 
-    // Shadow logs a second Luna call beside the heuristic/LLM decision.
-    // Live mode already called Luna (or skipped it on a strong heuristic);
-    // do not call it again.
+    // Shadow logs a second classifier beside the heuristic/LLM decision.
+    // Live mode owns that decision, including a Luna call still in flight.
     if (!live_ran) {
         try {
             if (intent_shadow_embed_enabled())
@@ -1095,6 +1103,18 @@ Orchestrator::apply_intent_ingress(const std::string& agent_id,
         } catch (...) {}
     }
     return result;
+}
+
+Agent* Orchestrator::luna_reroute_target(Agent* current, const std::string& current_id) {
+    LunaReroute rr = poll_luna_reroute_for_turn(intent_route_config_from_env());
+    if (!rr.apply || rr.agent.empty() || rr.agent == current_id) return current;
+    if (rr.agent == "index") return index_master_.get();
+    try {
+        if (!has_agent(rr.agent)) return current;
+        return &get_agent(rr.agent);
+    } catch (...) {
+        return current;
+    }
 }
 
 bool Orchestrator::ingress_skips_intent_reroute(const std::string& agent_id) const {
@@ -1135,6 +1155,7 @@ ApiResponse Orchestrator::send_internal(const std::string& agent_id,
         ingress = apply_intent_ingress(agent_id, orig_q, /*fresh_ingress=*/true);
         routed_id = ingress.agent_id;
     } else if (depth == 0) {
+        intent_route_clear_turn();
         intent_source_hint_.clear();
         clear_ingress_prefetch();
     }
@@ -1343,6 +1364,9 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
         // Notify UI that a sub-agent is about to make an API call.
         if (depth > 0 && start_cb_) start_cb_(agent_id);
 
+        if (i == 0 && depth == 0)
+            agent_ptr = luna_reroute_target(agent_ptr, agent_id);
+
         if (want_stream) {
             // Fresh filter per turn — its internal line buffer + /write-
             // block state must not carry state across unrelated turns.
@@ -1431,6 +1455,7 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
                                sig.raw.substr(0, 200);
                 }
             }
+            remember_advisor(sig);
 
             // Surface every gate decision to the verbose stream so an
             // operator watching --verbose / SSE can see the runtime gate
@@ -1534,7 +1559,8 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
                                               exec_invoker_cb_,
                                               agent_ptr->config().capabilities,
                                               nullptr,
-                                              workspace_root_provider_cb_);
+                                              workspace_root_provider_cb_,
+                                              host_exec_surface_);
         }
 
         // Loop detection — same helper as send_streaming.  A repeated
@@ -1722,6 +1748,7 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     if (original_query.empty() && !ingress_skips_intent_reroute(agent_id))
         ingress = apply_intent_ingress(agent_id, orig_q, /*fresh_ingress=*/true);
     else {
+        intent_route_clear_turn();
         intent_source_hint_.clear();
         clear_ingress_prefetch();
     }
@@ -1911,7 +1938,9 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
         if (stream_iteration_boundary_cb_) stream_iteration_boundary_cb_();
     };
 
-    // First turn: stream live to cb.
+    // First turn: stream live to cb. A finished Luna disagreement may
+    // swap the specialist here. The stream id stays on dispatch_id.
+    agent_ptr = luna_reroute_target(agent_ptr, dispatch_id);
     ApiResponse resp = agent_ptr->stream(std::move(current_parts), gated_cb);
     if (!resp.ok) {
         emit_stream_end(dispatch_id, sid, resp);
@@ -2022,6 +2051,7 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
                                sig.raw.substr(0, 200);
                 }
             }
+            remember_advisor(sig);
 
             // Mirror gate decisions to the verbose stream — see run_dispatch
             // for the matching emit and rationale.
@@ -2127,7 +2157,8 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
                                                   exec_invoker_cb_,
                                                   agent_ptr->config().capabilities,
                                                   &image_parts,
-                                                  workspace_root_provider_cb_);
+                                                  workspace_root_provider_cb_,
+                                                  host_exec_surface_);
             }
             // Same loop detector as run_dispatch, before presence notes
             // so the warning sits under any CONTEXT preamble.
@@ -2544,16 +2575,17 @@ Orchestrator::PlanResult Orchestrator::execute_plan(
                                " (direct): /exec is disabled in this context";
                 return result;
             }
-            // Mirror agent /exec gating: host exec always confirms; sandboxed
-            // exec only confirms destructive patterns.
+            // Same gate as agent /exec: an invoker (sandbox or host opt-in)
+            // confirms only destructive commands; no invoker confirms all.
             if (confirm_cb_ &&
                 (!exec_invoker_cb_ || is_destructive_exec(task_msg))) {
                 ConfirmRequest req;
                 req.action  = "exec";
                 req.target  = task_msg;
-                req.summary = exec_invoker_cb_
-                    ? "plan direct phase — destructive command"
-                    : "plan direct phase — HOST SHELL (unsandboxed)";
+                if (!exec_invoker_cb_ || host_exec_surface_)
+                    req.summary = "plan direct phase — HOST SHELL (unsandboxed)";
+                else
+                    req.summary = "plan direct phase — sandboxed shell — destructive command";
                 req.preview_lines.push_back(task_msg.substr(0, 200));
                 if (!confirm_cb_(req)) {
                     result.ok = false;
@@ -2654,7 +2686,8 @@ std::string Orchestrator::execute_slash_command(const std::string& line,
                                   exec_invoker_cb_,
                                   agent_ptr->config().capabilities,
                                   nullptr,
-                                  workspace_root_provider_cb_);
+                                  workspace_root_provider_cb_,
+                                  host_exec_surface_);
 }
 
 void Orchestrator::emit_stream_end(const std::string& agent_id, int stream_id,

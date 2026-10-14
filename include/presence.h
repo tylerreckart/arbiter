@@ -106,6 +106,11 @@ PresenceOutput parse_presence_signal(const std::string& reply);
 
 // `[PRESENCE: Name]\n<body>\n[END PRESENCE]\n\n` — prepended to the
 // working agent's next user-role tool-result envelope.
+//
+// `watcher_name` and `note` are untrusted.  The formatter strips controls,
+// breaks `[END PRESENCE]` / `[/exec` framing inside the body, and rewrites
+// a writ line's leading slash so the note cannot be parsed as commands
+// or close the block early (#302).
 std::string format_presence_injection(const std::string& watcher_name,
                                       const std::string& note);
 

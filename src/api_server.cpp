@@ -6462,6 +6462,7 @@ ExecInvoker make_exec_invoker_callback(const ApiServerOptions& opts,
                                         Orchestrator* orch) {
     SandboxManager* mgr = opts.sandbox;
     if (mgr) {
+        if (orch) orch->set_host_exec_surface(false);
         return [mgr, tenant_id, orch](const std::string& cmd) -> std::string {
             std::atomic<bool>* cancel = nullptr;
             if (auto token = current_request_cancel_token())
@@ -6478,10 +6479,16 @@ ExecInvoker make_exec_invoker_callback(const ApiServerOptions& opts,
     // than the operator intended.  They must remove ARBITER_SANDBOX_IMAGE
     // to use host exec.
     if (opts.host_exec_enabled && !opts.sandbox_enabled) {
+        if (orch) orch->set_host_exec_surface(true);
+        // Dispatcher already applied the confirm / destructive gate.
+        // confirmed=true lets an approved shell pipeline run; unapproved
+        // commands never reach this callback.  Direct cmd_exec() callers
+        // still default confirmed=false.
         return [](const std::string& cmd) -> std::string {
-            return cmd_exec(cmd);
+            return cmd_exec(cmd, /*confirmed=*/true);
         };
     }
+    if (orch) orch->set_host_exec_surface(false);
     return nullptr;
 }
 

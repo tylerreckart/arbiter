@@ -2093,4 +2093,9 @@ if(INDEX_BUILD_TESTS)
     )
         arbiter_use_embedded_themes(${_t})
     endforeach()
+
+    # Offline: a matching digest is accepted and a mismatch deletes the
+    # file and fails. Same helper the OpenTUI and Zig downloads use.
+    add_test(NAME sha256_pin
+        COMMAND bash ${CMAKE_SOURCE_DIR}/cmake/test_sha256_pin.sh)
 endif()

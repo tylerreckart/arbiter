@@ -40,23 +40,24 @@ See [`docs/cli/connect.md`](connect.md). Local provider keys (`OPENROUTER_API_KE
 | `ARBITER_INTENT_LLM_RATE_BURST` | Burst for the intent LLM bucket. Default `5`. |
 | `ARBITER_INTENT_SHADOW` | When `luna` (also `on` / `true` / `1`), depth-0 intent classification also asks `openai/gpt-6-luna` for a logprob distribution over the loaded roster and logs `intent_shadow`. When `embed`, the same log line is the local embedding router instead. Routing is unchanged. Unset or `off` disables it. Skipped when live mode is on, so the same backend is not called twice. |
 | `ARBITER_INTENT_SHADOW_MODEL` | OpenRouter model id for the shadow call. Default `openai/gpt-6-luna`. |
-| `ARBITER_INTENT_LIVE` | When `luna` (also `on` / `true` / `1`), depth-0 ingress uses the tiered router instead of the generative `<intent>` classifier. Default off. The local embedding router runs first when its model is loaded. Below `ARBITER_INTENT_EMBED_MIN_CONFIDENCE`, one Luna `decide()` asks for specialist and difficulty together. The heuristic runs only when the embedding model is absent. Timeout, error, or no label routes to `ARBITER_INTENT_DEFAULT_AGENT` and leaves redirection to the advisor. |
-| `ARBITER_INTENT_LUNA_MIN_CONFIDENCE` | Luna confidence at or above this value is tier `luna`. Below it the best guess is still used (`luna_guess`). Default `0.55`. Clamped to [0, 1]. |
-| `ARBITER_INTENT_LUNA_TIMEOUT_MS` | How long the router waits for that one Luna call. Default `400`, clamped to ≥ 1. That default is a placeholder and needs tuning; it is not a measured Luna latency. A live check on 2026-10-13 (reasoning off, one output token) was p50 1359 ms and p95 1564 ms over 4 calls, and one-off curls took 4-5 s. Left at 400 ms, nearly every live call times out and the router falls back to the default agent. On expiry the call is cancelled and the default agent is used. |
+| `ARBITER_INTENT_LIVE` | When `luna` (also `on` / `true` / `1`), depth-0 ingress uses the local router instead of the generative `<intent>` classifier. Default off. A cached Luna decision is the route. Otherwise the embedding model decides at every confidence, and a missing model uses `ARBITER_INTENT_DEFAULT_AGENT`. Luna runs in the background for a low-confidence embed or a missing model, and its result fills the cache for the next similar request. |
+| `ARBITER_INTENT_LUNA_MIN_CONFIDENCE` | Luna confidence at or above this value is source `luna` when a cached result is applied, and it is the bar for `ARBITER_INTENT_LUNA_REROUTE`. Below it a cached result is source `luna_guess`. Default `0.55`. Clamped to [0, 1]. |
+| `ARBITER_INTENT_LUNA_TIMEOUT_MS` | Budget for the background Luna call. Default `2000`, clamped to ≥ 1. Routing returns before this elapses. The default is sized to live OpenRouter measurements of `openai/gpt-6-luna` with reasoning off: about 1.0–1.4 s at p50 and 1.6–1.9 s at p95. A 2026-10-13 smoke over 4 calls was p50 1359 ms and p95 1564 ms. On expiry the call is cancelled and left out of the cache. The synchronous route is already the embedding choice, or the default agent when the embedding model is unavailable. |
+| `ARBITER_INTENT_LUNA_REROUTE` | When `1` / `on` / `true` / `yes`, a Luna result that finishes before the turn's first model call may replace the specialist if it disagrees and its confidence is at least `ARBITER_INTENT_LUNA_MIN_CONFIDENCE`. The executor model stays the synchronous choice. Default off. |
 | `ARBITER_INTENT_STRONG_DIFFICULTY` | Difficulty at or above this selects the strong executor model. Default `0.5`. |
 | `ARBITER_INTENT_DEFAULT_DIFFICULTY` | Difficulty used when a successful Luna call has no cheap/strong labels. Default `0.5`. Heuristic and fallback turns keep the agent's own model. |
 | `ARBITER_INTENT_CACHE_TTL_MS` | LRU TTL for a normalized request plus roster. Default `60000`. `0` disables the cache. |
 | `ARBITER_INTENT_CACHE_ENTRIES` | LRU capacity. Default `64` (clamped ≥ 1). |
 | `ARBITER_INTENT_CACHE_KEY_CHARS` | Normalized request length kept in the cache key. Default `512`. |
-| `ARBITER_INTENT_DEFAULT_AGENT` | Agent used when Luna times out, errors, or returns no label. Default `index` (no reroute). |
+| `ARBITER_INTENT_DEFAULT_AGENT` | Synchronous route when the embedding model is missing or the embed call fails. Default `index` (no reroute). |
 | `ARBITER_INTENT_LUNA_MODEL` | OpenRouter model id for the live call. Default `openai/gpt-6-luna`. |
 | `ARBITER_INTENT_CHEAP_MODEL` | Executor model when difficulty is below the strong cutoff. Empty uses the executing agent's `model`. |
 | `ARBITER_INTENT_STRONG_MODEL` | Executor model when difficulty is at or above the strong cutoff. Empty uses `advisor.model`, then the agent's `model`. |
-| `ARBITER_INTENT_EMBED_MIN_CONFIDENCE` | Embedding confidence at or above this value routes as `embed` and does not call Luna. Below it, Luna runs. Default `0.35`. Clamped to [0, 1]. |
+| `ARBITER_INTENT_EMBED_MIN_CONFIDENCE` | Embedding confidence at or above this value routes as `embed` and leaves Luna idle. Below it the embedding choice is still the route for this turn, and Luna runs in the background. Default `0.35`. Clamped to [0, 1]. |
 | `ARBITER_INTENT_EMBED_TEMPERATURE` | Softmax temperature on cosine similarity. Default `0.02`. Values outside (0, 5] are ignored. Argmax does not change with temperature; the cutoff does. |
 | `ARBITER_EMBED_MODEL` | Operator path to the ONNX file. Must be set together with `ARBITER_EMBED_VOCAB`. Checksum is not applied to an operator path. |
 | `ARBITER_EMBED_VOCAB` | Operator path to the WordPiece `vocab.txt`. Pair with `ARBITER_EMBED_MODEL`. |
-| `ARBITER_EMBED_NO_FETCH` | When set to anything other than `0` / `false` / `off`, a missing model is not downloaded. Live routing falls back to the heuristic. `ARBITER_OFFLINE` does the same. |
+| `ARBITER_EMBED_NO_FETCH` | When set to anything other than `0` / `false` / `off`, a missing model is not downloaded. Live routing uses `ARBITER_INTENT_DEFAULT_AGENT` for that turn. `ARBITER_OFFLINE` does the same. |
 
 ## TUI session durability
 
@@ -76,7 +77,7 @@ See [`docs/tui/sessions.md`](../tui/sessions.md).
 | `--allow-host-exec`          | Allow host `/exec` when running `arbiter --api` (unsafe; prefer the Docker sandbox). |
 | `ARBITER_ALLOW_HOST_EXEC`    | Same as `--allow-host-exec` when set to a non-empty, non-`0` value. |
 
-The API server keeps `/exec` **disabled** unless the per-tenant Docker sandbox is configured (below) or host exec is explicitly allowed. In the TUI, host `/exec` always shows a `HOST SHELL (unsandboxed)` permission card when a confirm callback is wired. Setting `ARBITER_SANDBOX_IMAGE` in the TUI opts into the same Docker sandbox path as `--api`. If the image is set but the sandbox fails its usability check, `/exec` returns `ERR` (no silent host fallback) until the image is fixed or the env var is unset.
+The API server keeps `/exec` **disabled** unless the per-tenant Docker sandbox is configured (below) or host exec is explicitly allowed. In the TUI, plain argv (`git status`, `ls`, `python3 script.py`) runs directly, with no shell. Pipes, redirects, substitution, and inline eval show a `HOST SHELL (unsandboxed) — destructive command` card; the API's confirm callback denies those instead of prompting. Setting `ARBITER_SANDBOX_IMAGE` in the TUI opts into the same Docker sandbox path as `--api`. If the image is set but the sandbox fails its usability check, `/exec` returns `ERR` (no silent host fallback) until the image is fixed or the env var is unset.
 
 ## Per-tenant sandbox
 
