@@ -105,24 +105,35 @@ TEST_CASE("turn logs stay off the input line and fleet sizes to one agent") {
     s.send("probe-turn-marker\r");
     REQUIRE(wait_for_plain_after(s, before, "Authentication header", 15000));
 
-    // The probe runs on the turn thread while the frame is live. The
-    // input line must still accept text afterwards. Live-row paint is a
-    // cell diff; macOS CI often never emits "clean-input-zz" as one run
-    // (same block-cursor split as tests/test_line_editor.cpp). Submitting
-    // echoes the accepted buffer into scrollback.
+    // Fleet gaining its first row narrows the pane. That resize aborts
+    // read_line, and keystrokes already pulled into the aborted line are
+    // discarded. On macOS that lands after "Authentication header" is
+    // visible, so a single type burst never shows up. Wait until the
+    // resized frame has been logged, then type again if a late interrupt
+    // still eats the first attempt.
+    REQUIRE(wait_for_log(s,
+                         "fleet_h=5 fleet_rows=1 session_y=5 session_h=35",
+                         10000));
+    s.read_for(400);
+
     const std::size_t before_type = s.output().size();
-    s.send("clean-input-zz");
-    bool input_ok = wait_for_plain_after(s, before_type, "clean-input-zz", 10000);
+    bool input_ok = false;
+    for (int attempt = 0; attempt < 4 && !input_ok; ++attempt) {
+        s.send("\x15");  // Ctrl-U: drop a partial line from a raced attempt
+        s.read_for(50);
+        s.send("clean-input-zz");
+        input_ok = wait_for_plain_after(s, before_type, "clean-input-zz", 2500);
+    }
     if (!input_ok) {
         s.send("\r");
-        input_ok = wait_for_plain_after(s, before_type, "clean-input-zz", 20000);
+        input_ok = wait_for_plain_after(s, before_type, "clean-input-zz", 8000);
     }
     if (!input_ok) {
         std::string tail = s.output().size() > before_type
-            ? PtySession::strip_ansi(s.output().substr(before_type))
+            ? collapse_ascii(PtySession::strip_ansi(s.output().substr(before_type)))
             : std::string{};
-        if (tail.size() > 500) tail = tail.substr(tail.size() - 500);
-        INFO("plain tail after type: " << tail);
+        if (tail.size() > 600) tail = tail.substr(tail.size() - 600);
+        REQUIRE_MESSAGE(input_ok, "plain tail after type: " << tail);
     }
     REQUIRE(input_ok);
 
