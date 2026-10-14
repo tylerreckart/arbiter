@@ -11,8 +11,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <iostream>
 #include <sstream>
 #include <string>
+
+#include <unistd.h>
 
 using namespace arbiter;
 
@@ -83,6 +86,56 @@ TEST_CASE("json escapes troublesome bytes") {
     Logger::global().error("bad", {{"field", "line\nwith\"quotes\\and"}});
     auto out = cap.read();
     CHECK(contains(out, "\"field\":\"line\\nwith\\\"quotes\\\\and\""));
+}
+
+TEST_CASE("TUI stderr redirect keeps operational logs off the terminal") {
+    StderrCapture cap;
+    Logger::global().set_format(LogFormat::Human);
+
+    char tmpl[] = "/tmp/arbiter_tui_log.XXXXXX";
+    REQUIRE(mkdtemp(tmpl) != nullptr);
+    const std::string dir = tmpl;
+    const std::string log_path = dir + "/tui.log";
+
+    {
+        TuiStderrRedirect redir(dir);
+        REQUIRE(redir.active());
+        CHECK(redir.path() == log_path);
+        std::fprintf(stderr,
+                     "[info] openrouter_response requested_model=%s served_model=%s cost_usd=%s\n",
+                     "anthropic/claude-haiku-4-5",
+                     "anthropic/claude-haiku-4.5",
+                     "0.001197");
+        std::fflush(stderr);
+        Logger::global().info("intent_route", {{"tier", "probe"}, {"source", "probe"}});
+        Logger::global().info("intent_shadow", {{"backend", "probe"}});
+        std::cerr << "[info] cerr-must-not-hit-terminal\n";
+        std::cerr.flush();
+    }
+
+    const std::string leaked = cap.read();
+    CHECK(leaked.find("openrouter_response") == std::string::npos);
+    CHECK(leaked.find("intent_route") == std::string::npos);
+    CHECK(leaked.find("intent_shadow") == std::string::npos);
+    CHECK(leaked.find("cerr-must-not-hit-terminal") == std::string::npos);
+
+    std::ifstream in(log_path);
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    const std::string logged = ss.str();
+    CHECK(contains(logged, "[info] openrouter_response requested_model=anthropic/claude-haiku-4-5"));
+    CHECK(contains(logged, "served_model=anthropic/claude-haiku-4.5"));
+    CHECK(contains(logged, "cost_usd=0.001197"));
+    CHECK(contains(logged, "intent_route"));
+    CHECK(contains(logged, "tier=probe"));
+    CHECK(contains(logged, "intent_shadow"));
+    CHECK(contains(logged, "cerr-must-not-hit-terminal"));
+
+    Logger::global().info("after_restore", {{"ok", "1"}});
+    CHECK(contains(cap.read(), "after_restore"));
+
+    std::remove(log_path.c_str());
+    ::rmdir(dir.c_str());
 }
 
 TEST_CASE("each call writes exactly one line") {

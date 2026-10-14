@@ -43,14 +43,6 @@ std::string trim_to_cells(std::string s, int max_cells) {
     return arbiter::trim_to_display_cols(std::move(s), max_cells);
 }
 
-int scroll_bottom_y(const Rect& pane_rect, int pane_input_rows,
-                    int pane_bottom_pad_rows) {
-    const int bottom_pad = std::max(1, pane_bottom_pad_rows);
-    const int sep_top = pane_rect.y + pane_rect.h - bottom_pad - pane_input_rows
-                      - TUI::kSepRows;
-    return sep_top - 1;
-}
-
 }  // namespace
 
 int fleet_sidebar_list_top(const Rect& r, int overlay_lines) {
@@ -60,15 +52,9 @@ int fleet_sidebar_list_top(const Rect& r, int overlay_lines) {
     return y;
 }
 
-int fleet_sidebar_visible_rows(const Rect& sidebar_rect,
-                               const Rect& pane_rect,
-                               int pane_input_rows,
-                               int overlay_lines,
-                               int pane_bottom_pad_rows) {
-    const int top = fleet_sidebar_list_top(sidebar_rect, overlay_lines);
-    const int bottom = scroll_bottom_y(pane_rect, pane_input_rows,
-                                       pane_bottom_pad_rows);
-    return std::max(0, bottom - top + 1);
+int fleet_sidebar_visible_rows(const Rect& sidebar_rect, int overlay_lines) {
+    // Matches fleet_sidebar_height: the rect is the box, not the pane.
+    return fleet_sidebar_list_rows(sidebar_rect.h, overlay_lines);
 }
 
 void draw_fleet_sidebar(OpenTuiHandle frame,
@@ -77,21 +63,25 @@ void draw_fleet_sidebar(OpenTuiHandle frame,
                         const Rect& pane_rect,
                         int pane_input_rows,
                         int pane_bottom_pad_rows) {
+    (void)pane_input_rows;
     if (frame == 0 || r.w <= 0 || r.h <= 0) return;
     if (pane_rect.h <= 0) return;
 
     const TuiDesign& d = tui_design();
     const SidebarColors sc = tui_sidebar_colors(d);
     const int bottom_pad = std::max(1, pane_bottom_pad_rows);
+    // The rect is content-sized (see fleet_sidebar_height). The box fills
+    // that rect and stops above the Session sidebar; it does not stretch
+    // to the pane's input row.
     const int panel_top_y = r.y + 1;
-    const int input_bottom_y = pane_rect.y + pane_rect.h - bottom_pad - 1;
-    if (input_bottom_y < panel_top_y + 1) return;
+    const int panel_bottom_y = r.y + r.h - 1;
+    if (panel_bottom_y <= panel_top_y) return;
 
     const int block_x = r.x;
     const int block_w = r.w;
     const int content_x = block_x + 1 + kBoxPad;
     const int content_w = std::max(1, block_w - 2 - (kBoxPad * 2));
-    const int block_h = std::max(2, input_bottom_y - panel_top_y + 1);
+    const int block_h = panel_bottom_y - panel_top_y + 1;
     const TuiRgba& bg = d.bg.scroll;
     const TuiRgba& border = snap.focused ? d.border.focus : d.text.muted;
     const TuiRgba* title_fg = snap.focused ? &d.accent.primary : &d.accent.primary;
@@ -107,8 +97,8 @@ void draw_fleet_sidebar(OpenTuiHandle frame,
                      title_fg);
 
     int y = panel_top_y + 2;
-    const int list_bottom = scroll_bottom_y(pane_rect, pane_input_rows,
-                                            pane_bottom_pad_rows);
+    // Last interior row: one above the bottom border.
+    const int list_bottom = panel_bottom_y - 1;
 
     const auto overlay_lines = format_fleet_overlay(snap.overlay, content_w);
     for (const auto& line : overlay_lines) {
@@ -170,8 +160,12 @@ void draw_fleet_sidebar(OpenTuiHandle frame,
     }
 
     if (snap.total_input + snap.total_output > 0) {
+        // Token total sits on the shared hint row only when this box
+        // actually reaches it. A content-sized fleet leaves that cell
+        // to the Session version label.
         const int hint_y = pane_rect.y + pane_rect.h - 2;
-        if (hint_y > input_bottom_y) {
+        const int input_bottom_y = pane_rect.y + pane_rect.h - bottom_pad - 1;
+        if (panel_bottom_y >= hint_y && hint_y > input_bottom_y) {
             std::string tot = format_token_count(snap.total_input + snap.total_output);
             const std::string label = trim_to_cells(tot, content_w);
             const int ver_w = cell_width(label);

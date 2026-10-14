@@ -2,12 +2,17 @@
 
 #include "logger.h"
 
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <sstream>
+
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 namespace arbiter {
 
@@ -134,6 +139,78 @@ void Logger::log_impl(const char* level, const std::string& event,
     std::string s = line.str();
     std::lock_guard<std::mutex> lk(mu_);
     std::fwrite(s.data(), 1, s.size(), stderr);
+    std::fflush(stderr);
+}
+
+TuiStderrRedirect::TuiStderrRedirect(const std::string& config_dir) {
+    if (config_dir.empty()) return;
+    path_ = config_dir + "/tui.log";
+    // get_config_dir() already creates this; mkdir covers tests and a
+    // race where the directory disappeared between startup and the TUI.
+    if (::mkdir(config_dir.c_str(), 0755) != 0 && errno != EEXIST) {
+        // Still try the open — the directory may already be usable.
+    }
+    std::fflush(stderr);
+    std::fflush(stdout);
+
+    int flags = O_WRONLY | O_CREAT | O_CLOEXEC;
+    struct stat st{};
+    if (::stat(path_.c_str(), &st) == 0 && st.st_size > (1024 * 1024)) {
+        flags |= O_TRUNC;
+    } else {
+        flags |= O_APPEND;
+    }
+    const int log_fd = ::open(path_.c_str(), flags, 0644);
+    if (log_fd < 0) return;
+    saved_fd_ = ::dup(STDERR_FILENO);
+    if (saved_fd_ < 0) {
+        ::close(log_fd);
+        return;
+    }
+    if (::dup2(log_fd, STDERR_FILENO) < 0) {
+        ::close(saved_fd_);
+        saved_fd_ = -1;
+        ::close(log_fd);
+        return;
+    }
+    if (log_fd != STDERR_FILENO) ::close(log_fd);
+    // Drop any stdio buffer that still points at the old device so a
+    // later fprintf cannot flush a line onto the tty.
+    std::setvbuf(stderr, nullptr, _IONBF, 0);
+    active_ = true;
+}
+
+TuiStderrRedirect::~TuiStderrRedirect() {
+    if (!active_) return;
+    std::fflush(stderr);
+    if (saved_fd_ >= 0) {
+        ::dup2(saved_fd_, STDERR_FILENO);
+        ::close(saved_fd_);
+        saved_fd_ = -1;
+    }
+    std::setvbuf(stderr, nullptr, _IONBF, 0);
+    active_ = false;
+}
+
+void emit_tui_log_probe_if_enabled() {
+    const char* v = std::getenv("ARBITER_TUI_LOG_PROBE");
+    if (!v || !*v || std::strcmp(v, "0") == 0) return;
+    // Same events a live turn writes: intent_route / intent_shadow go
+    // through Logger, openrouter_response is the historical fprintf.
+    Logger::global().info("intent_route", {
+        {"tier", "probe"},
+        {"source", "probe"},
+        {"choice", "index"},
+    });
+    Logger::global().info("intent_shadow", {
+        {"backend", "probe"},
+        {"ok", "true"},
+    });
+    std::fprintf(stderr,
+                 "[info] openrouter_response requested_model=%s served_model=%s cost_usd=%s\n",
+                 "anthropic/claude-haiku-4-5",
+                 "anthropic/claude-haiku-4.5",
+                 "0.001197");
     std::fflush(stderr);
 }
 

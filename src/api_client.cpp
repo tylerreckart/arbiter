@@ -1271,6 +1271,10 @@ void log_openrouter_served(const Provider& prov,
     char cost[64];
     if (resp.has_cost) std::snprintf(cost, sizeof(cost), "%.8g", resp.cost_usd);
     else std::snprintf(cost, sizeof(cost), "unknown");
+    // stderr, never stdout. The interactive TUI dup2s fd 2 onto
+    // ~/.arbiter/tui.log for the session (TuiStderrRedirect) so this
+    // line cannot interleave with the frame. A write to stdout here
+    // would land in the readline band.
     std::fprintf(stderr,
                  "[info] openrouter_response requested_model=%s served_model=%s cost_usd=%s\n",
                  log_field(req.model).c_str(),

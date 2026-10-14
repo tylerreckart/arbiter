@@ -811,4 +811,38 @@ FleetSnapshot FleetSidebarState::snapshot(const FleetTree& tree,
     return snap;
 }
 
+int fleet_sidebar_height(int term_rows, int content_rows, int overlay_lines,
+                         bool reserve_session) {
+    if (term_rows <= 0) return 0;
+    if (overlay_lines < 0) overlay_lines = 0;
+    if (content_rows < 0) content_rows = 0;
+
+    const int chrome = fleet_sidebar_chrome_rows(overlay_lines);
+    const int min_list = 1;
+    const int min_h = chrome + min_list;
+    // Too short to stack a one-row fleet box and anything else. The
+    // caller gives the whole column to fleet; Session overlaps only on
+    // these tiny terminals.
+    if (min_h >= term_rows) return term_rows;
+
+    int max_list = kFleetMaxListRows;
+    if (reserve_session) {
+        const int leftover = term_rows - min_h;
+        const int session_floor = std::min(kFleetSessionMinRows, leftover);
+        const int max_h = term_rows - session_floor;
+        const int cap = max_h - chrome;
+        if (cap < max_list) max_list = cap;
+    } else {
+        const int cap = term_rows - chrome;
+        if (cap < max_list) max_list = cap;
+    }
+    if (max_list < min_list) max_list = min_list;
+
+    int list = content_rows < min_list ? min_list : content_rows;
+    if (list > max_list) list = max_list;
+    int h = chrome + list;
+    if (h > term_rows) h = term_rows;
+    return h;
+}
+
 }  // namespace arbiter

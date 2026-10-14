@@ -58,4 +58,36 @@ private:
     bool               initialized_ = false;
 };
 
+// While the interactive TUI owns the terminal, stderr is appended to
+// `<config_dir>/tui.log` instead of the tty. stdout stays the renderer
+// (OpenTUI frames). Every direct stderr writer during a session —
+// Logger, the openrouter_response fprintf, intent_route / intent_shadow,
+// scheduler, compaction, constitution warnings, the OpenTUI log bridge —
+// follows this fd. Restores the previous stderr on destruction.
+//
+// Audited stdout during TUI mode is the frame itself, a flush before the
+// input loop, and a single newline after alt-screen teardown. Operational
+// logs are stderr. `print_turn_rule` writes stdout but has no callers.
+class TuiStderrRedirect {
+public:
+    explicit TuiStderrRedirect(const std::string& config_dir);
+    ~TuiStderrRedirect();
+
+    TuiStderrRedirect(const TuiStderrRedirect&) = delete;
+    TuiStderrRedirect& operator=(const TuiStderrRedirect&) = delete;
+
+    [[nodiscard]] bool active() const { return active_; }
+    [[nodiscard]] const std::string& path() const { return path_; }
+
+private:
+    std::string path_;
+    int saved_fd_ = -1;
+    bool active_ = false;
+};
+
+// ARBITER_TUI_LOG_PROBE=1 emits openrouter_response, intent_route, and
+// intent_shadow on stderr. Used by the PTY regression test to fire those
+// lines from a turn thread. No-op otherwise.
+void emit_tui_log_probe_if_enabled();
+
 } // namespace arbiter

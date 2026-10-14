@@ -3,6 +3,7 @@
 #include "repl/session_internal.h"
 
 #include "cli_helpers.h"
+#include "logger.h"
 #include "orchestrator.h"
 #include "agent_conversation.h"
 #include "api_server.h"
@@ -31,6 +32,7 @@
 #include "theme.h"
 #include "config.h"
 
+#include <cstring>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -293,16 +295,22 @@ void ReplSession::setup_pane_hooks() {
         const int panes = static_cast<int>(layout_ptr->pane_count());
         const int leading = HistorySidebarState::width_for_terminal(
             cols, history_sidebar.enabled());
+        int fleet_rows_n = 0;
         const Rect fleet_r = fleet_sidebar_rect();
         if (fleet_r.w > 0) {
             const FleetSnapshot fs = fleet_sidebar.snapshot(fleet, cols, leading);
+            fleet_rows_n = static_cast<int>(fs.rows.size());
             opentui::draw_fleet_sidebar(
                 frame, fs, fleet_r, outer, sidebar_input_rows, outer_bottom_pad);
         }
 
+        int session_y = 0;
+        int session_h = 0;
         int sw = sidebar.effective_width(cols, panes, leading);
         if (sw > 0) {
             const Rect sb = right_sidebar_rect();
+            session_y = sb.y;
+            session_h = sb.h;
             if (sb.w > 0) {
                 Pane& focused = layout_ptr->focused();
                 sidebar.set_focus_context(focused.current_agent,
@@ -322,6 +330,21 @@ void ReplSession::setup_pane_hooks() {
                 opentui::draw_sidebar(
                     frame, snap, sb, outer, sidebar_input_rows, outer_bottom_pad);
             }
+        }
+
+        // ARBITER_TUI_LAYOUT_TRACE=1 records the painted rail split on
+        // stderr (the session log file). The PTY test checks 0- and
+        // 1-agent heights without parsing the frame.
+        static const bool layout_trace = [] {
+            const char* v = std::getenv("ARBITER_TUI_LAYOUT_TRACE");
+            return v && *v && std::strcmp(v, "0") != 0;
+        }();
+        if (layout_trace) {
+            std::fprintf(stderr,
+                         "tui_layout rows=%d cols=%d fleet_h=%d fleet_rows=%d "
+                         "session_y=%d session_h=%d\n",
+                         rows, cols, fleet_r.h, fleet_rows_n, session_y, session_h);
+            std::fflush(stderr);
         }
 
         // Floating menus use the undimmed design so they stay bright.
@@ -534,6 +557,13 @@ void ReplSession::run() {
     // that. Raw mode has to be in effect *before* the queries go out.
     // stdin_guard is a member declared before ot_session so exception unwind
     // restores termios after OpenTUI teardown (reverse destruction order).
+    //
+    // stderr leaves the tty before the first frame. Operational logs
+    // (openrouter_response, intent_route, intent_shadow, and every other
+    // fprintf/cerr) append to ~/.arbiter/tui.log until run() returns,
+    // which is after shutdown() joins the turn threads.
+    TuiStderrRedirect tui_log(dir);
+    (void)tui_log;
     ot_session.start(static_cast<std::uint32_t>(term_cols()),
                      static_cast<std::uint32_t>(term_rows()));
     // Install fatal handlers BEFORE enabling mouse / arming so a crash or

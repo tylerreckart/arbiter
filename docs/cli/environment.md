@@ -135,6 +135,8 @@ Distinct from env vars but listed here for completeness, since the env-vs-file p
 | `workspaces/t<id>/…`       | Per-tenant sandbox workspace (mode 0700). Created on demand when the sandbox is enabled. See [`docs/concepts/sandbox.md`](../concepts/sandbox.md). |
 | `mcp_servers.json`         | Optional MCP server registry. See [`docs/concepts/mcp.md`](../concepts/mcp.md). Editable via `arbiter --setup-tools`. |
 | `history`                  | Merged TUI editor history across panes.                              |
+| `tui.log`                  | Operational stderr while the interactive TUI owns the terminal (`openrouter_response`, `intent_route`, `intent_shadow`, and other `fprintf` / `cerr`). Truncated on open once past 1 MiB. Not used by `arbiter --api`. |
+| `tui-fatal.log`            | Async-signal-safe crash note from the TUI fatal handlers.            |
 
 Files are read on demand by the relevant subsystem. None of them are watched for changes — restart the process to pick up edits to `agents/*.json` or `mcp_servers.json` while `--api` is running.
 

@@ -556,12 +556,30 @@ if(INDEX_BUILD_TESTS)
     add_test(NAME chat_command_tui COMMAND chat_command_tui_tests)
     add_dependencies(chat_command_tui_tests arbiter)
 
+    add_executable(tui_log_bleed_tests
+        tests/pty_harness.cpp
+        tests/test_tui_log_bleed.cpp
+    )
+    target_include_directories(tui_log_bleed_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/tests
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    target_compile_definitions(tui_log_bleed_tests PRIVATE
+        INDEX_TEST_BINARY="$<TARGET_FILE:arbiter>"
+    )
+    if(UNIX AND NOT APPLE)
+        target_link_libraries(tui_log_bleed_tests PRIVATE util)
+    endif()
+    add_test(NAME tui_log_bleed COMMAND tui_log_bleed_tests)
+    add_dependencies(tui_log_bleed_tests arbiter)
+
     # PTY integration tests drive the full arbiter binary (links prebuilt
     # OpenTUI).  Label them so TSan CI can exclude the set — TSan + an
     # unsanitized OpenTUI .so is timing-flaky and outside what unit TSan
     # covers.  ASan CI still runs the full suite including these.
     set_tests_properties(
         line_editor sidebar_tui transcript_replay_tui chat_command_tui
+        tui_log_bleed
         PROPERTIES LABELS "pty")
 
     # --- Unit tests for security-critical command functions ---
