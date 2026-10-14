@@ -255,6 +255,88 @@ TEST_CASE("format_fleet_row is scannable and width-capped") {
     CHECK(line.find("researcher_a") != std::string::npos);
 }
 
+TEST_CASE("format_fleet_row keeps the name and drops a long tool path") {
+    GlyphModeGuard mode("unicode");
+    FleetNode n;
+    n.agent = "researcher";
+    n.depth = 1;
+    n.running = true;
+    n.active_tool = "read:src/tui/fleet.cpp";
+
+    const std::string wide = format_fleet_row(n, true, true, 24);
+    CHECK(static_cast<int>(display_width(wide)) <= 24);
+    CHECK(wide.find("researcher") != std::string::npos);
+    CHECK(wide.find("read") != std::string::npos);
+    CHECK(wide.find("src/") == std::string::npos);
+    CHECK(wide.find(':') == std::string::npos);
+
+    // Prefix + full name leaves no room for the verb. The name stays whole.
+    const std::string tight = format_fleet_row(n, true, true, 16);
+    CHECK(static_cast<int>(display_width(tight)) <= 16);
+    CHECK(tight.find("researcher") != std::string::npos);
+    CHECK(tight.find("src/") == std::string::npos);
+
+    // Shrink the name to fit a verb, but not below 8 cells.
+    const std::string mid = format_fleet_row(n, true, true, 18);
+    CHECK(static_cast<int>(display_width(mid)) <= 18);
+    CHECK(mid.find("research") != std::string::npos);
+    CHECK(mid.find("read") != std::string::npos);
+    CHECK(mid.find("src/") == std::string::npos);
+
+    FleetNode crushed;
+    crushed.agent = "researcher";
+    crushed.depth = 1;
+    crushed.running = true;
+    crushed.active_tool = "read:src/tui/fleet.cpp";
+    const std::string narrow = format_fleet_row(crushed, true, true, 10);
+    CHECK(static_cast<int>(display_width(narrow)) <= 10);
+    CHECK(narrow.find("src/") == std::string::npos);
+}
+
+TEST_CASE("fleet tree marks only the real last sibling") {
+    GlyphModeGuard mode("unicode");
+    FleetTree t;
+    t.on_stream_start("index", 0, 0);
+    t.on_stream_start("alpha", 1, 1);
+    t.on_stream_start("beta", 2, 1);
+    t.on_stream_start("gamma", 3, 1);
+    auto rows = t.paint_rows(40);
+    REQUIRE(rows.size() == 4);
+    CHECK(rows[1].line.find(glyphs().tree_branch) != std::string::npos);
+    CHECK(rows[1].line.find(glyphs().tree_last) == std::string::npos);
+    CHECK(rows[2].line.find(glyphs().tree_branch) != std::string::npos);
+    CHECK(rows[3].line.find(glyphs().tree_last) != std::string::npos);
+    CHECK(rows[3].line.find(glyphs().tree_branch) == std::string::npos);
+}
+
+TEST_CASE("fleet keys move, open, leave focus, and cancel") {
+    FleetSidebarState sb;
+    CHECK(sb.handle_key('j', 0, "") == FleetKey::Down);
+    CHECK(sb.handle_key('k', 0, "") == FleetKey::Up);
+    CHECK(sb.handle_key('J', 0, "") == FleetKey::Down);
+    CHECK(sb.handle_key('K', 0, "") == FleetKey::Up);
+    CHECK(sb.handle_key('\r', 0, "") == FleetKey::Enter);
+    CHECK(sb.handle_key(0x1B, 0, "") == FleetKey::Escape);
+    CHECK(sb.handle_key('x', 0, "") == FleetKey::Cancel);
+    CHECK(sb.handle_key('X', 0, "") == FleetKey::Cancel);
+    CHECK(sb.handle_key('q', 0, "") == FleetKey::None);
+}
+
+TEST_CASE("selected fleet row detail keeps the full tool and blocked-on id") {
+    GlyphModeGuard mode("unicode");
+    FleetTree t;
+    t.on_stream_start("researcher", 1, 0);
+    t.on_tool_call(1, "read:src/tui/fleet.cpp", true);
+    t.on_stream_start("writer", 2, 0);
+    t.on_waiting(2, "researcher");
+    auto rows = t.paint_rows(20);
+    REQUIRE(rows.size() == 2);
+    CHECK(rows[0].line.find("src/") == std::string::npos);
+    CHECK(rows[0].detail.find("read src/tui/fleet.cpp") != std::string::npos);
+    CHECK(rows[1].line.find("researcher") == std::string::npos);
+    CHECK(rows[1].detail.find("wait researcher") != std::string::npos);
+}
+
 TEST_CASE("fleet sidebar stays hidden until there is a job") {
     FleetTree t;
     FleetSidebarState sb;
@@ -354,7 +436,8 @@ TEST_CASE("sidebar snapshot clamps selection to live row count") {
 
 TEST_CASE("fleet pane height tracks content, not a fixed fraction of the terminal") {
     const int one = fleet_sidebar_chrome_rows(0) + 1;
-    CHECK(one == 5);
+    // Chrome includes the always-reserved detail row, so one agent is 6.
+    CHECK(one == 6);
     CHECK(fleet_sidebar_list_rows(one, 0) == 1);
 
     // 0 and 1 agents are the same short box on every normal height.
@@ -451,7 +534,10 @@ TEST_CASE("waiting fleet nodes use the dotted glyph and a blocked-on tail") {
     REQUIRE(rows.size() == 1);
     CHECK(rows[0].status == RunState::Waiting);
     CHECK(rows[0].line.find(glyphs().waiting) != std::string::npos);
-    CHECK(rows[0].line.find("waiting on nexus") != std::string::npos);
+    CHECK(rows[0].line.find("wait") != std::string::npos);
+    CHECK(rows[0].line.find("nexus") == std::string::npos);
+    CHECK(rows[0].detail.find("wait") != std::string::npos);
+    CHECK(rows[0].detail.find("nexus") != std::string::npos);
 
     t.on_text(2);
     CHECK(fleet_node_status(*t.find_stream(2)) == RunState::Running);

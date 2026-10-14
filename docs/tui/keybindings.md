@@ -86,7 +86,7 @@ cards. See [output-ux.md](output-ux.md).
 | `^W c`       | Close the focused pane. Its exec thread is joined; in-flight turn is cancelled. Last remaining pane cannot be closed. |
 | `^W t`       | Toggle the conversation-history sidebar (left rail). Preference is saved to `~/.arbiter/tui.json`. |
 | `^W b`       | Enter the conversation sidebar for selection. Auto-shows the sidebar if hidden. Use `↑`/`↓` and `Enter`; `Esc` cancels. |
-| `^W f`       | Show the fleet dashboard and enter it. Second press hides it. Click a row or `Enter` to focus that stream's pane; `Esc` on a running row cancels that pane's turn. |
+| `^W f`       | Show the fleet dashboard and enter it. Second press hides it. Click a row or `Enter` to focus that stream's pane; `x` cancels a running row's turn; `Esc` only leaves fleet focus. |
 
 If the chord byte doesn't match any of the above, it's silently dropped — the editor returns to the normal input state. `^W` followed by a regular character does *not* fall through to insertion; the chord window always consumes its byte.
 
@@ -96,7 +96,8 @@ If the chord byte doesn't match any of the above, it's silently dropped — the 
 |-----------|--------|
 | `↑` / `↓` | Move selection (`j` / `k` aliases). |
 | `Enter`   | Focus the conversation pane bound to that stream. |
-| `Esc`     | Cancel the selected in-flight turn if it is running; otherwise leave fleet focus. |
+| `Esc`     | Leave fleet focus. Does not cancel the turn. |
+| `x`       | Cancel the selected in-flight turn. |
 | `PgUp` / `PgDn` | Page the tree. |
 
 See [Fleet](fleet.md).

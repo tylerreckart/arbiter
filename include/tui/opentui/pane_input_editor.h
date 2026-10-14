@@ -139,6 +139,9 @@ private:
     void handle_csi(char final, const std::string& params);
 
     void bind_viewport(const TUI& tui, int content_width) const;
+    // Theme prompt, plus the accent rail unless reverse-i-search replaced it.
+    // Caller holds mu_.
+    [[nodiscard]] int input_lead_cols_locked() const;
 
     TUI& tui_;
     CompletionFn    completer_;

@@ -140,11 +140,12 @@ TEST_CASE("session json round-trip rebuilds thinking and tool rows in scroll") {
     view.bind(tui);
     replay_into(view, restored);
 
-    const auto think_hits = view.find_rows("thinking");
+    const auto think_hits = view.find_rows("thought");
     CHECK_FALSE(think_hits.empty());
 
-    const auto tool_hits = view.find_rows("fetch:https://example.com");
+    const auto tool_hits = view.find_rows("https://example.com");
     CHECK_FALSE(tool_hits.empty());
+    CHECK(view.find_rows("fetch:").empty());
 
     const auto prose_hits = view.find_rows("here is the answer");
     CHECK_FALSE(prose_hits.empty());
