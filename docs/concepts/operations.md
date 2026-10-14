@@ -106,6 +106,8 @@ Operational events (startup, recovery sweep, shutdown drain, sandbox enable/disa
 
 JSON mode is intended for log aggregators (Loki, ELK, Datadog) that index by field rather than parse free-form text. Per-request stderr logs from `--verbose` SSE mirroring keep their existing human format in v1 — only the operational-event stream is structured.
 
+The interactive TUI owns the terminal. For that session, stderr is appended to `~/.arbiter/tui.log` (truncated on open once the file is past 1 MiB) and restored when the UI exits. That includes `openrouter_response`, `intent_route`, `intent_shadow`, scheduler and compaction warnings, and the OpenTUI bridge. Those lines are not drawn into the frame. `arbiter --api` is unchanged: it still logs to the process stderr.
+
 ```json
 {"ts":"2026-05-11T14:23:01.412Z","level":"info","event":"sandbox_enabled","image":"arbiter/sandbox:latest","network":"none","memory_mb":"512","cpus":"1.00","pids":"256","timeout_s":"30"}
 {"ts":"2026-05-11T14:23:01.413Z","level":"info","event":"recovery_sweep","orphaned_count":"2","new_state":"failed"}

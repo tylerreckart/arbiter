@@ -211,6 +211,34 @@ private:
     mutable int last_row_count_ = 0;
 };
 
+// Non-list rows in the fleet rect: blank above the box, title border,
+// blank under the title, bottom border, plus overlay lines and the gap
+// under a reconcile header.
+inline int fleet_sidebar_chrome_rows(int overlay_lines) {
+    const int ov = overlay_lines > 0 ? overlay_lines : 0;
+    return 4 + ov + (ov > 0 ? 1 : 0);
+}
+
+// Tree rows that fit in a fleet rect of `rect_h` (the scroll window).
+inline int fleet_sidebar_list_rows(int rect_h, int overlay_lines) {
+    if (rect_h <= 0) return 0;
+    const int chrome = fleet_sidebar_chrome_rows(overlay_lines);
+    return rect_h > chrome ? rect_h - chrome : 0;
+}
+
+// Hard cap on painted tree rows. Further agents scroll inside the box.
+inline constexpr int kFleetMaxListRows = 12;
+// Rows kept for Session / Agent / Todos / Tools when that sidebar shares
+// the rail. Fleet shrinks before this floor does, down to one tree row.
+inline constexpr int kFleetSessionMinRows = 14;
+
+// Height of the fleet rail rect, including the blank row above the box.
+// `content_rows` 0 still reserves one "(no agents)" line so a focused
+// empty pane is visible. `reserve_session` leaves the Session sidebar
+// the rest of the column.
+int fleet_sidebar_height(int term_rows, int content_rows, int overlay_lines,
+                         bool reserve_session);
+
 // One-line tree row: depth indent, status, name, optional jit tag, tool
 // or token totals.  Width-capped for a ~24–28 col rail.
 std::string format_fleet_row(const FleetNode& node,

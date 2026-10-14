@@ -4,6 +4,7 @@
 #include "tui/fleet.h"
 #include "styled_text.h"
 
+#include <algorithm>
 #include <string>
 
 using namespace arbiter;
@@ -302,4 +303,66 @@ TEST_CASE("sidebar snapshot clamps selection to live row count") {
     CHECK(snap.selected == 0);
     CHECK(snap.rows.empty());
     CHECK_FALSE(snap.visible);
+}
+
+TEST_CASE("fleet pane height tracks content, not a fixed fraction of the terminal") {
+    const int one = fleet_sidebar_chrome_rows(0) + 1;
+    CHECK(one == 5);
+    CHECK(fleet_sidebar_list_rows(one, 0) == 1);
+
+    // 0 and 1 agents are the same short box on every normal height.
+    // The previous rail used max(10, rows * 2 / 5), about the top half.
+    for (int rows : {24, 40, 50, 80}) {
+        CHECK(fleet_sidebar_height(rows, 0, 0, true) == one);
+        CHECK(fleet_sidebar_height(rows, 1, 0, true) == one);
+        CHECK(fleet_sidebar_height(rows, 1, 0, true) < std::max(10, rows * 2 / 5));
+        CHECK(rows - one >= kFleetSessionMinRows);
+    }
+
+    // Many agents: cap the list and scroll; Session keeps its floor.
+    const int many_40 = fleet_sidebar_height(40, 30, 0, true);
+    CHECK(many_40 == fleet_sidebar_chrome_rows(0) + kFleetMaxListRows);
+    CHECK(fleet_sidebar_list_rows(many_40, 0) == kFleetMaxListRows);
+    CHECK(fleet_sidebar_list_rows(many_40, 0) < 30);
+    CHECK(40 - many_40 >= kFleetSessionMinRows);
+
+    const int many_80 = fleet_sidebar_height(80, 100, 0, true);
+    CHECK(many_80 == many_40);
+    CHECK(80 - many_80 >= kFleetSessionMinRows);
+
+    // 24 rows cannot fit 12 list rows and a 14-row session. Fleet shrinks.
+    const int many_24 = fleet_sidebar_height(24, 30, 0, true);
+    CHECK(many_24 < many_40);
+    CHECK(fleet_sidebar_list_rows(many_24, 0) >= 1);
+    CHECK(fleet_sidebar_list_rows(many_24, 0) < 30);
+    CHECK(24 - many_24 == kFleetSessionMinRows);
+
+    // Tight terminals still show one fleet row and give the rest away.
+    CHECK(fleet_sidebar_height(10, 1, 0, true) == one);
+    CHECK(fleet_sidebar_height(10, 20, 0, true) == one);
+    CHECK(10 - one >= 1);
+    CHECK(fleet_sidebar_height(6, 20, 0, true) == one);
+
+    // Reconcile overlay is inside the content height, not extra empty space.
+    const int with_overlay = fleet_sidebar_height(40, 1, 2, true);
+    CHECK(with_overlay == fleet_sidebar_chrome_rows(2) + 1);
+    CHECK(with_overlay > one);
+    CHECK(fleet_sidebar_list_rows(with_overlay, 2) == 1);
+    const int many_overlay = fleet_sidebar_height(40, 30, 2, true);
+    CHECK(fleet_sidebar_list_rows(many_overlay, 2) == kFleetMaxListRows);
+    CHECK(40 - many_overlay >= kFleetSessionMinRows);
+
+    // Multi-pane hides Session. Fleet still sizes to content instead of
+    // taking the whole column.
+    CHECK(fleet_sidebar_height(40, 0, 0, false) == one);
+    CHECK(fleet_sidebar_height(40, 1, 0, false) == one);
+    CHECK(fleet_sidebar_height(80, 1, 0, false) == one);
+    const int solo_many = fleet_sidebar_height(40, 30, 0, false);
+    CHECK(solo_many == fleet_sidebar_chrome_rows(0) + kFleetMaxListRows);
+    CHECK(solo_many < 40);
+
+    CHECK(fleet_sidebar_height(0, 1, 0, true) == 0);
+    CHECK(fleet_sidebar_height(-4, 3, 1, false) == 0);
+    CHECK(fleet_sidebar_list_rows(0, 0) == 0);
+    CHECK(fleet_sidebar_list_rows(one, 2) == 0);
 }

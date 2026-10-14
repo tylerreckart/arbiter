@@ -160,23 +160,19 @@ Rect ReplSession::fleet_sidebar_rect() {
         const int pane_w = layout_ptr->outer_bounds().w;
         const int gap = cols - pane_x - pane_w;
         if (gap < fw) return {};
-        Rect rail{pane_x + pane_w, 0, fw, std::max(1, rows)};
         const int panes = static_cast<int>(layout_ptr->pane_count());
         const int sw = sidebar.effective_width(cols, panes, leading);
-        if (sw > 0 && rows > 16) {
-            // Stack fleet above the session box so neither drowns the other.
-            rail.h = std::max(10, rows * 2 / 5);
-        }
-        return rail;
+        const bool session_below = sw > 0;
+        const auto snap = fleet_sidebar.snapshot(fleet, cols, leading);
+        const int content_rows = static_cast<int>(snap.rows.size());
+        const int h = fleet_sidebar_height(
+            rows, content_rows, snap.overlay_lines, session_below);
+        return Rect{pane_x + pane_w, 0, fw, std::max(1, h)};
 }
 
 int ReplSession::fleet_visible_rows(const Rect& fb, const FleetSnapshot& snap) {
-        const Rect outer = layout_ptr->outer_bounds();
-        const int outer_bottom_pad =
-            arbiter::tui_outer_bottom_pad_rows(arbiter::tui_design());
         return arbiter::opentui::fleet_sidebar_visible_rows(
-            fb, outer, outer_bottom_input_rows(), snap.overlay_lines,
-            outer_bottom_pad);
+            fb, snap.overlay_lines);
 }
 
 void ReplSession::enter_fleet_focus() {

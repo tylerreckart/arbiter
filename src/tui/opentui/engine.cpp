@@ -1,10 +1,10 @@
 #include "tui/opentui/engine.h"
 
+#include "logger.h"
 #include "tui/tui_design.h"
 
 #include <chrono>
 #include <fcntl.h>
-#include <iostream>
 #include <stdexcept>
 #include <string>
 #include <sys/select.h>
@@ -20,8 +20,18 @@ void log_bridge(std::uint8_t level, const char* msg, std::uint32_t len) {
     if (level >= 3) tag = "error";
     else if (level == 2) tag = "warn";
     else if (level == 1) tag = "debug";
-    std::cerr << "[opentui:" << tag << "] "
-              << std::string(msg, msg + len) << '\n';
+    // One Logger write, not a multi-insertion cerr stream. While the TUI
+    // is up, stderr is the session log file.
+    if (level >= 3) {
+        arbiter::Logger::global().error(
+            std::string("opentui_") + tag, {{"msg", std::string(msg, msg + len)}});
+    } else if (level == 2) {
+        arbiter::Logger::global().warn(
+            std::string("opentui_") + tag, {{"msg", std::string(msg, msg + len)}});
+    } else {
+        arbiter::Logger::global().info(
+            std::string("opentui_") + tag, {{"msg", std::string(msg, msg + len)}});
+    }
 }
 
 // OpenTUI's setupTerminal emits capability queries (OSC 10/11, DECRQM, DCS

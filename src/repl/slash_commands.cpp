@@ -2,6 +2,7 @@
 #include "repl/session_internal.h"
 #include "cli.h"
 #include "cli_helpers.h"
+#include "logger.h"
 #include "orchestrator.h"
 #include "agent_conversation.h"
 #include "commands.h"
@@ -1671,6 +1672,10 @@ void ReplSession::handle_line(Pane& pane, const std::string& line,
 
         // Plain text → stream to current agent
         reveal_sidebar();
+        // Turn thread, while the output pump owns the frame. The probe
+        // writes the same stderr lines a live OpenRouter / intent turn
+        // does; TuiStderrRedirect must keep them off the tty.
+        emit_tui_log_probe_if_enabled();
         try {
             tool_indicator.begin();
             pane.last_interim_agent.clear();

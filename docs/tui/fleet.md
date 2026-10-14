@@ -10,7 +10,7 @@ The pane occupies the **right rail** (~24–28 columns) once a job has at least 
 
 Idle sessions keep the rail free so conversation panes are not crowded. An empty Fleet box is not shown unless you force focus with `Ctrl-w f`.
 
-When both Fleet and Session want the rail (single pane, wide terminal, a job is live), Fleet stacks on top and Session sits below.
+When both Fleet and Session want the rail (single pane, wide terminal, a job is live), Fleet stacks on top and sizes to its rows: the title, an optional reconcile overlay, and the tree. One agent is a short box. The list caps at 12 rows and scrolls; Session, Agent, Todos, and Tools keep the rest of the column (at least 14 rows when the terminal is tall enough to spare them). With no Session sidebar (a multi-pane layout) the fleet box is still content-sized rather than the full column.
 
 ## What each row shows
 

@@ -7,6 +7,10 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+
+### Fixed
+- **TUI logs no longer paint over the input line.** While the interactive UI owns the terminal, stderr is appended to `~/.arbiter/tui.log` instead of the tty. That covers `openrouter_response`, `intent_route`, `intent_shadow`, and the other operational `fprintf` / `cerr` writers that were interleaving with the frame.
+
 ### Security
 - **Host `/exec` no longer runs through a shell by default.** Commands are split into argv and spawned with `posix_spawn`. Pipes, redirects, command substitution, background jobs, and inline eval (`bash -c`, `python -c`, `perl -e`, `node -e`, `php -r`, and similar) are destructive: they run under `/bin/sh -c` only after confirmation, and the HTTP API still denies them because its confirm callback cannot approve. `--no-exec` still disables exec. `--allow-host-exec` still runs ordinary argv (`git status`, `ls`, `python3 script.py`) without a prompt. A TUI confirmation now actually runs the command; previously the host invoker asked `cmd_exec` again with confirmation off, so Allow still returned `ERR:`. Non-zero exits are reported as the process exit code (`[exit 1]`), not the raw wait status. Quoted metacharacters (`echo 'a|b'`) are data. `chmod`, `chown`, `tee`, `env`, and `xargs` always require confirmation. A script path (`bash script.sh`) is still argv.
 - **Presence notes cannot inject slash commands (#302).** Watcher names and CONTEXT text are neutralized before the `[PRESENCE: …]` / `[END PRESENCE]` envelope, so untrusted text cannot close the block or plant a column-0 `/exec` or `/write` the working agent would parse.
