@@ -26,6 +26,10 @@ struct Constitution {
     // --- Behavioral rules ---
     Brevity brevity = Brevity::Full;
     int     max_tokens = 1024;      // response cap
+    // Tool-loop budget: model calls that may still emit tools. Unset falls
+    // through to ARBITER_MAX_TURNS, then 6 at depth 0 and 12 at depth >= 1.
+    // The one final-answer call after the cap is outside this budget.
+    std::optional<int> max_turns;
     double  temperature = 0.3;      // low = deterministic
     std::string model = "anthropic/claude-sonnet-5";
 

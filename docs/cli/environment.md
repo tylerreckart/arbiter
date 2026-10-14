@@ -69,6 +69,23 @@ See [`docs/cli/connect.md`](connect.md). Local provider keys (`OPENROUTER_API_KE
 
 See [`docs/tui/sessions.md`](../tui/sessions.md).
 
+## Tool loop and delegation
+
+Each agent turn may call tools and feed the results back for another model call. The budget is how many of those model calls may still emit tools.
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `ARBITER_MAX_TURNS` | Tool-loop budget when the agent's constitution omits `max_turns`. A positive integer. `0`, negative, and non-numeric values are ignored. | Unset. Depth 0 uses `6`. Depth 1 and deeper use `12`. |
+| `ARBITER_MAX_DELEGATION_DEPTH` | How deep `/agent` and `/parallel` may nest. The agent at this depth cannot delegate further. A positive integer; invalid values are ignored. | `2` |
+
+Precedence for the tool-loop budget, first hit wins:
+
+1. The agent's constitution field `max_turns` (positive integer).
+2. `ARBITER_MAX_TURNS`.
+3. Depth default: `6` at the top-level turn, `12` for a delegated turn.
+
+When one tool round remains, the tool-result envelope gains the note `1 tool round left; finish up`. If the budget is still exhausted with tool calls pending, the runtime makes one more model call with tool execution disabled and returns that answer with `ok: true` and `budget_exhausted: true`. That extra call is not part of the budget and does not run on turns that finish inside it. See [Agent](../concepts/data-model.md#agent-catalog-row).
+
 ## Host `/exec` (TUI / `--send`)
 
 | Variable / flag              | Purpose |

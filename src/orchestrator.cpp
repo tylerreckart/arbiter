@@ -15,6 +15,7 @@
 #include "tui/stream_filter.h"
 #include <atomic>
 #include <cctype>
+#include <cerrno>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
@@ -132,6 +133,80 @@ void remember_advisor(const AdvisorGateOutput& sig) {
     note_intent_advisor_for_turn(verdict);
 }
 
+// Positive integer from the environment. Unset, empty, or junk → 0 so
+// callers fall through to the next precedence tier. Read at turn start,
+// not inside the tool loop.
+int env_positive_int(const char* name) {
+    const char* e = std::getenv(name);
+    if (!e || !*e) return 0;
+    char* end = nullptr;
+    errno = 0;
+    long v = std::strtol(e, &end, 10);
+    if (errno != 0 || end == e || (end && *end != '\0')) return 0;
+    if (v <= 0 || v > 1000000L) return 0;
+    return static_cast<int>(v);
+}
+
+int max_delegation_depth() {
+    int v = env_positive_int("ARBITER_MAX_DELEGATION_DEPTH");
+    return v > 0 ? v : 2;
+}
+
+// Constitution field, then ARBITER_MAX_TURNS, then depth default.
+// Depth 0 stays at the historical cap of 6; delegated turns get 12 so a
+// sub-agent can finish a tool chain the parent would have to abandon.
+int resolve_max_turns(const Constitution& c, int depth) {
+    if (c.max_turns && *c.max_turns > 0) return *c.max_turns;
+    if (int v = env_positive_int("ARBITER_MAX_TURNS")) return v;
+    return depth > 0 ? 12 : 6;
+}
+
+constexpr const char* kOneToolRoundLeftNote = "1 tool round left; finish up";
+constexpr const char* kBudgetExhaustedPrompt =
+    "Tool budget exhausted. Reply now with your best final answer from what you have; no tool calls.";
+
+void append_one_tool_round_note(std::string& envelope) {
+    if (!envelope.empty() && envelope.back() != '\n') envelope.push_back('\n');
+    envelope += kOneToolRoundLeftNote;
+    envelope.push_back('\n');
+}
+
+// Parent-facing text for a delegated turn. Partial assistant text survives
+// a failed turn; a hard ERR is only the empty-content case.
+std::string format_delegation_result(const ApiResponse& resp) {
+    if (resp.ok) return resp.content;
+    if (!resp.content.empty()) {
+        return "[PARTIAL: " + resp.error_type + ": " + resp.error + "]\n" +
+               resp.content;
+    }
+    return "ERR: " + resp.error;
+}
+
+// Fold the tool-disabled final-answer call onto the work already done.
+// Cancel stays a hard stop (no budget_exhausted) so plans and SSE still
+// treat it as aborted. Any other outcome sets the flag; success clears
+// the error so the turn is not reported as failed.
+void fold_budget_final(ApiResponse& resp,
+                       std::string prior_content,
+                       int prior_in,
+                       int prior_out,
+                       bool had_tools) {
+    resp.had_tool_calls = had_tools || resp.had_tool_calls;
+    resp.input_tokens += prior_in;
+    resp.output_tokens += prior_out;
+    if (!prior_content.empty() && !resp.content.empty() &&
+        prior_content.back() != '\n') {
+        prior_content.push_back('\n');
+    }
+    resp.content = std::move(prior_content) + resp.content;
+    if (resp.error_type == "cancelled") return;
+    resp.budget_exhausted = true;
+    if (resp.ok) {
+        resp.error.clear();
+        resp.error_type.clear();
+    }
+}
+
 }  // namespace
 
 Orchestrator::Orchestrator(std::map<std::string, std::string> api_keys)
@@ -240,12 +315,14 @@ void Orchestrator::load_agents(const std::string& dir) {
 AgentInvoker Orchestrator::make_invoker(const std::string& caller_id, int depth,
                                        std::map<std::string, std::string>* shared_cache,
                                        const std::string& original_query) {
-    if (depth >= 2) {
-        return [](const std::string&, const std::string&) -> std::string {
-            return "ERR: delegation depth limit reached (max 2 levels)";
+    const int max_depth = max_delegation_depth();
+    if (depth >= max_depth) {
+        return [max_depth](const std::string&, const std::string&) -> std::string {
+            return "ERR: delegation depth limit reached (max " +
+                   std::to_string(max_depth) + " levels)";
         };
     }
-    return [this, caller_id, depth, shared_cache, original_query](
+    return [this, caller_id, depth, shared_cache, original_query, max_depth](
                const std::string& sub_id, const std::string& sub_msg) -> std::string {
         if (sub_id == caller_id) return "ERR: agent cannot invoke itself";
         if (sub_id == "index") return "ERR: index cannot be delegated to";
@@ -301,7 +378,8 @@ AgentInvoker Orchestrator::make_invoker(const std::string& caller_id, int depth,
                 "[DELEGATION CONTEXT]\n"
                 "Original request: " + truncated_query + "\n"
                 "Delegated by: " + caller_id + "\n"
-                "Pipeline depth: " + std::to_string(depth + 1) + "/2\n";
+                "Pipeline depth: " + std::to_string(depth + 1) + "/" +
+                std::to_string(max_depth) + "\n";
             if (!pipeline_memory.empty()) {
                 enriched_msg +=
                     "Pipeline memory (entries written by prior agents this "
@@ -327,21 +405,24 @@ AgentInvoker Orchestrator::make_invoker(const std::string& caller_id, int depth,
         // Shared cache propagates so sub-agents don't re-fetch URLs.
         auto resp = send_internal(sub_id, enriched_msg, depth + 1,
                                   shared_cache, original_query);
-        return resp.ok ? resp.content : "ERR: " + resp.error;
+        return format_delegation_result(resp);
     };
 }
 
 ParallelInvoker Orchestrator::make_parallel_invoker(const std::string& caller_id,
                                                      int depth,
                                                      const std::string& original_query) {
-    if (depth >= 2) {
-        return [](const std::vector<std::pair<std::string, std::string>>& kids) {
+    const int max_depth = max_delegation_depth();
+    if (depth >= max_depth) {
+        return [max_depth](const std::vector<std::pair<std::string, std::string>>& kids) {
             return std::vector<std::string>(
-                kids.size(), "ERR: /parallel cannot delegate past depth 2");
+                kids.size(),
+                "ERR: /parallel cannot delegate past depth " +
+                    std::to_string(max_depth));
         };
     }
 
-    return [this, caller_id, depth, original_query](
+    return [this, caller_id, depth, original_query, max_depth](
                const std::vector<std::pair<std::string, std::string>>& kids)
                -> std::vector<std::string> {
         if (kids.size() > kMaxParallelChildren) {
@@ -379,6 +460,8 @@ ParallelInvoker Orchestrator::make_parallel_invoker(const std::string& caller_id
             // Inherit kill-switch preflight so CLI DB-only revoke stops
             // sub-agent provider traffic as well as the parent client.
             child_clients.back()->copy_preflight_from(client_);
+            if (client_.has_scripted_transport())
+                child_clients.back()->copy_scripted_transport_from(client_);
             // Share the parent's reasoning sink so thought deltas still reach
             // the TUI when the provider emits them.  Workers also re-pin the
             // spawning pane + tool conversation TLS via tl_worker_pane_binder.
@@ -412,7 +495,8 @@ ParallelInvoker Orchestrator::make_parallel_invoker(const std::string& caller_id
             const std::string sub_msg = kids[i].second;
             threads.emplace_back([this, i, sub_id, sub_msg, caller_id, depth,
                                    original_query, &results, &child_clients,
-                                   pane_binder, conv_key, parent_token]() {
+                                   pane_binder, conv_key, parent_token,
+                                   max_depth]() {
                 if (pane_binder) pane_binder();
                 ConversationScope scope(conv_key);
                 std::unique_ptr<RequestCancelScope> child_cancel;
@@ -482,7 +566,8 @@ ParallelInvoker Orchestrator::make_parallel_invoker(const std::string& caller_id
                         "[DELEGATION CONTEXT]\n"
                         "Original request: " + truncated_query + "\n"
                         "Delegated by: " + caller_id + " (/parallel)\n"
-                        "Pipeline depth: " + std::to_string(depth + 1) + "/2\n";
+                        "Pipeline depth: " + std::to_string(depth + 1) + "/" +
+                        std::to_string(max_depth) + "\n";
                     if (!pipeline_memory.empty()) {
                         enriched_msg +=
                             "Pipeline memory (entries written by prior agents "
@@ -514,7 +599,7 @@ ParallelInvoker Orchestrator::make_parallel_invoker(const std::string& caller_id
                 try {
                     auto resp = run_dispatch(ephemeral, sub_id, enriched_msg,
                                               depth + 1, &local_cache, orig_q);
-                    results[i] = resp.ok ? resp.content : "ERR: " + resp.error;
+                    results[i] = format_delegation_result(resp);
                 } catch (const std::exception& e) {
                     results[i] = std::string("ERR: ") + e.what();
                 }
@@ -569,6 +654,8 @@ ApiResponse Orchestrator::run_ephemeral(const std::string& agent_id,
     child->set_circuit_breaker(client_.circuit_breaker());
     child->set_metrics(client_.metrics());
     child->copy_preflight_from(client_);
+    if (client_.has_scripted_transport())
+        child->copy_scripted_transport_from(client_);
     if (client_.reasoning_callback()) {
         child->set_reasoning_callback(client_.reasoning_callback());
     }
@@ -1320,7 +1407,9 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
     std::string total_content;
     int         total_input_tok  = 0;
     int         total_output_tok = 0;
-    static constexpr int kMaxTurns = 6;
+    // Resolved again after a depth-0 Luna swap (below) so the executing
+    // agent's constitution wins. Read once per turn, not per token.
+    int max_turns = resolve_max_turns(agent_ptr->config(), depth);
 
     // Gate-mode bookkeeping.  `last_cmds` + `last_tool_results` carry the
     // most recent tool-call iteration's data so when the executor finally
@@ -1349,7 +1438,7 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
     // Last parsed tool commands — used to detect iteration-budget exhaustion.
     std::vector<AgentCommand> pending_cmds;
 
-    for (int i = 0; i < kMaxTurns; ++i) {
+    for (int i = 0; i < max_turns; ++i) {
         if (turn_is_cancelled()) {
             ApiResponse r;
             r.ok         = false;
@@ -1366,6 +1455,8 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
 
         if (i == 0 && depth == 0)
             agent_ptr = luna_reroute_target(agent_ptr, agent_id);
+        if (i == 0)
+            max_turns = resolve_max_turns(agent_ptr->config(), depth);
 
         if (want_stream) {
             // Fresh filter per turn — its internal line buffer + /write-
@@ -1489,11 +1580,11 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
             }
 
             if (sig.kind == AdvisorGateOutput::Kind::Redirect) {
-                if (i == kMaxTurns - 1) {
+                if (i == max_turns - 1) {
                     resp.ok         = false;
                     resp.error_type = "iteration_limit";
                     resp.error      = "advisor redirect at iteration limit (max " +
-                                      std::to_string(kMaxTurns) + ")";
+                                      std::to_string(max_turns) + ")";
                     resp.content       = std::move(total_content);
                     resp.input_tokens  = total_input_tok;
                     resp.output_tokens = total_output_tok;
@@ -1506,7 +1597,7 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
                     sig.text +
                     "\n[end advisor redirect]";
                 // Re-enter the loop; the next iteration counts against
-                // kMaxTurns the same way a tool-call iteration would.
+                // max_turns the same way a tool-call iteration would.
                 continue;
             }
 
@@ -1530,7 +1621,7 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
         // Last iteration — do not execute tools we cannot follow up on.
         // Matches send_streaming, which runs tools at the start of the
         // next loop trip and therefore drops the leftover cmds at the cap.
-        if (i == kMaxTurns - 1) {
+        if (i == max_turns - 1) {
             break;
         }
 
@@ -1586,6 +1677,11 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
             if (!presence.empty()) current_msg = presence + current_msg;
         }
 
+        // Next model call is the last one inside the budget. A string
+        // append only — turns that finish earlier never touch this.
+        if (i == max_turns - 2)
+            append_one_tool_round_note(current_msg);
+
         // Commit tool envelopes before the next LLM wait so quit/cancel
         // cannot drop completed tool work from the model-facing history.
         agent_ptr->commit_user_message(current_msg);
@@ -1593,21 +1689,47 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
         fire_history_checkpoint();
     }
 
+    // Cap hit with tool calls still pending. One more model call, tools
+    // disabled, and only on this path — a turn that finishes inside the
+    // budget never pays for it. Success stays ok so the parent keeps the
+    // work and the stream end is not Failed.
+    if (!pending_cmds.empty()) {
+        if (turn_is_cancelled()) {
+            resp.ok            = false;
+            resp.error_type    = "cancelled";
+            resp.error         = "cancelled";
+            resp.content       = std::move(total_content);
+            resp.input_tokens  = total_input_tok;
+            resp.output_tokens = total_output_tok;
+            resp.had_tool_calls = true;
+            emit_stream_end(agent_id, sid, StreamEndStatus::Cancelled);
+            return resp;
+        }
+        agent_ptr->commit_user_message(kBudgetExhaustedPrompt);
+        fire_history_checkpoint();
+        ApiResponse final_resp;
+        if (want_stream) {
+            auto filter = make_filter();
+            auto* f = filter.get();
+            final_resp = agent_ptr->stream_continue(
+                [f](const std::string& chunk) { f->feed(chunk); });
+            filter->flush();
+        } else {
+            final_resp = agent_ptr->send_continue();
+        }
+        // Tool lines in the final answer are not parsed or executed.
+        fold_budget_final(final_resp, std::move(total_content),
+                          total_input_tok, total_output_tok, true);
+        emit_stream_end(agent_id, sid, final_resp);
+        return final_resp;
+    }
+
     // Cumulative content/tokens replace the last iteration's values so the
     // returned ApiResponse represents the full sub-agent turn.
     resp.content       = std::move(total_content);
     resp.input_tokens  = total_input_tok;
     resp.output_tokens = total_output_tok;
-    if (!pending_cmds.empty()) {
-        resp.ok         = false;
-        resp.error_type = "iteration_limit";
-        resp.error      = "tool loop iteration limit reached (max " +
-                          std::to_string(kMaxTurns) + ")";
-        resp.had_tool_calls = true;
-        emit_stream_end(agent_id, sid, StreamEndStatus::Failed);
-    } else {
-        emit_stream_end(agent_id, sid, resp);
-    }
+    emit_stream_end(agent_id, sid, resp);
     return resp;
 }
 
@@ -2005,17 +2127,19 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     // so the next model call uses stream_continue.
     bool user_already_committed = false;
 
-    // Unified main loop — kMaxIters bounds total trips through stream(),
+    // Unified main loop — max_iters bounds total trips through stream(),
     // including iter 0 (already done above).  `i` is the number of
     // stream() calls already completed, so the loop must reach
-    // i == kMaxIters to gate the last trip (unlike run_dispatch, which
-    // streams first and therefore uses a 0-based i == kMaxTurns - 1).
+    // i == max_iters to gate the last trip (unlike run_dispatch, which
+    // streams first and therefore uses a 0-based i == max_turns - 1).
     // Loop body branches on (cmds.empty + gate state) into one of:
     // terminate, halt, redirect, or execute-tool-results-and-stream.
     // Pre-gate behaviour (gate inactive) is preserved exactly:
     // cmds.empty terminates immediately.
-    static constexpr int kMaxIters = 6;
-    for (int i = 1; i <= kMaxIters; ++i) {
+    // send_streaming is always depth 0. The executing agent's constitution
+    // (after any Luna swap above) supplies max_turns.
+    const int max_iters = resolve_max_turns(agent_ptr->config(), 0);
+    for (int i = 1; i <= max_iters; ++i) {
         if (turn_is_cancelled()) {
             ApiResponse r;
             r.ok         = false;
@@ -2095,15 +2219,15 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
                 return resp;
             }
 
-            // REDIRECT after kMaxIters streams cannot be followed by
+            // REDIRECT after max_iters streams cannot be followed by
             // another gated turn — match run_dispatch and fail closed
             // with iteration_limit (#307).  `i` counts completed streams
-            // (iter 0 ran outside), so the last slot is i == kMaxIters.
-            if (i == kMaxIters) {
+            // (iter 0 ran outside), so the last slot is i == max_iters.
+            if (i == max_iters) {
                 resp.ok            = false;
                 resp.error_type    = "iteration_limit";
                 resp.error         = "advisor redirect at iteration limit (max " +
-                                     std::to_string(kMaxIters) + ")";
+                                     std::to_string(max_iters) + ")";
                 resp.content       = std::move(total_content);
                 resp.input_tokens  = total_input_tok;
                 resp.output_tokens = total_output_tok;
@@ -2122,7 +2246,7 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
         } else {
             // Last completed stream still has tools we cannot follow up
             // on — same as run_dispatch dropping leftover cmds at the cap.
-            if (i == kMaxIters) break;
+            if (i == max_iters) break;
             // Tool-call iteration — assemble tool results and re-enter.
             if (cb) cb("\n");
             // Image-bearing tool results (/fetch on image/*, /read on image
@@ -2176,6 +2300,9 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
                     sid, presence_notes_used);
                 if (!presence.empty()) tool_envelope = presence + tool_envelope;
             }
+            // Upcoming stream is the last one inside the budget.
+            if (i == max_iters - 1)
+                append_one_tool_round_note(tool_envelope);
             if (image_parts.empty()) {
                 set_current_text(std::move(tool_envelope));
             } else {
@@ -2194,7 +2321,7 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
             fire_history_checkpoint();
         }
 
-        if (i == kMaxIters) break;
+        if (i == max_iters) break;
 
         if (user_already_committed) {
             resp = agent_ptr->stream_continue(gated_cb);
@@ -2224,6 +2351,30 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
         if (!cmds.empty()) had_any_tool_calls = true;
     }
 
+    // Same final-answer turn as run_dispatch. Tool lines in the reply are
+    // not executed. ok=true (when the call succeeds) so the top-level
+    // stream end is Ok, not Failed.
+    if (!cmds.empty()) {
+        if (turn_is_cancelled()) {
+            resp.ok            = false;
+            resp.error_type    = "cancelled";
+            resp.error         = "cancelled";
+            resp.content       = std::move(total_content);
+            resp.input_tokens  = total_input_tok;
+            resp.output_tokens = total_output_tok;
+            resp.had_tool_calls = true;
+            emit_stream_end(dispatch_id, sid, StreamEndStatus::Cancelled);
+            return resp;
+        }
+        agent_ptr->commit_user_message(kBudgetExhaustedPrompt);
+        fire_history_checkpoint();
+        ApiResponse final_resp = agent_ptr->stream_continue(gated_cb);
+        fold_budget_final(final_resp, std::move(total_content),
+                          total_input_tok, total_output_tok, true);
+        emit_stream_end(dispatch_id, sid, final_resp);
+        return final_resp;
+    }
+
     // Replace per-iteration content/token counts with the cumulative values
     // before returning.  `resp` already carries the latest turn's `ok`,
     // `error`, and provider metadata, which is what we want to surface.
@@ -2231,15 +2382,7 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     resp.input_tokens   = total_input_tok;
     resp.output_tokens  = total_output_tok;
     resp.had_tool_calls = had_any_tool_calls;
-    if (!cmds.empty()) {
-        resp.ok         = false;
-        resp.error_type = "iteration_limit";
-        resp.error      = "tool loop iteration limit reached (max " +
-                          std::to_string(kMaxIters) + ")";
-        emit_stream_end(dispatch_id, sid, StreamEndStatus::Failed);
-    } else {
-        emit_stream_end(dispatch_id, sid, resp);
-    }
+    emit_stream_end(dispatch_id, sid, resp);
     return resp;
 }
 
@@ -2601,7 +2744,12 @@ Orchestrator::PlanResult Orchestrator::execute_plan(
             }
         } else {
             auto resp = send_internal(phase.agent, task_msg, 0);
-            if (!resp.ok) {
+            // A capped phase still produced work. Keep it and continue
+            // instead of aborting the rest of the plan. Cancel and other
+            // hard failures still stop the plan.
+            const bool keep_partial =
+                resp.error_type == "iteration_limit" || resp.budget_exhausted;
+            if (!resp.ok && !keep_partial) {
                 result.ok = false;
                 result.error = "Phase " + std::to_string(phase.number) +
                                " (" + phase.agent + ") failed: " + resp.error;

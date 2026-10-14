@@ -36,6 +36,7 @@ Either a bare constitution or wrapped under `agent_def`:
 | `goal`          | string | yes | What this agent is trying to accomplish. Goes into its system prompt. |
 | `brevity`       | string | no  | `"lite"` \| `"full"` \| `"ultra"`. Default `"full"`. |
 | `max_tokens`    | int    | no  | Response cap per turn. Default 1024. |
+| `max_turns`     | int    | no  | Tool-loop budget for this agent. Omit to inherit `ARBITER_MAX_TURNS`, then `6` at depth 0 and `12` at depth 1 or deeper. Must be a positive integer; `0` and negative values are ignored. |
 | `temperature`   | number | no  | 0.0–2.0. Default 0.3. |
 | `rules`         | array<string> | no | Behavioural constraints appended to the system prompt. |
 | `capabilities`  | array<string> | no | Tools this agent uses. Used by master for routing. |
