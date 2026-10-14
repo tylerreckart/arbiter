@@ -36,6 +36,26 @@ bool wait_for_raw(PtySession& s, std::size_t offset, const std::string& token,
     return false;
 }
 
+// The live input row is an OpenTUI cell diff. A block cursor can sit
+// between the typed characters, so the buffer is not one contiguous ASCII
+// run after ANSI stripping (same split as tests/test_line_editor.cpp).
+// Dropping non-ASCII joins a UTF-8 cursor cell back out.
+std::string collapse_ascii(const std::string& plain) {
+    std::string ascii;
+    ascii.reserve(plain.size());
+    for (unsigned char c : plain) {
+        if (c < 0x80) ascii.push_back(static_cast<char>(c));
+    }
+    return ascii;
+}
+
+bool plain_tail_has(PtySession& s, std::size_t offset, const std::string& token) {
+    if (s.output().size() <= offset) return false;
+    const std::string tail = PtySession::strip_ansi(s.output().substr(offset));
+    if (tail.find(token) != std::string::npos) return true;
+    return collapse_ascii(tail).find(token) != std::string::npos;
+}
+
 bool wait_for_plain_after(PtySession& s, std::size_t offset, const std::string& token,
                           int budget_ms) {
     budget_ms = scale_timeout_ms(budget_ms);
@@ -43,8 +63,7 @@ bool wait_for_plain_after(PtySession& s, std::size_t offset, const std::string& 
                         + std::chrono::milliseconds(budget_ms);
     while (std::chrono::steady_clock::now() < deadline) {
         s.read_for(150);
-        const std::string tail = PtySession::strip_ansi(s.output().substr(offset));
-        if (tail.find(token) != std::string::npos) return true;
+        if (plain_tail_has(s, offset, token)) return true;
     }
     return false;
 }
@@ -87,10 +106,25 @@ TEST_CASE("turn logs stay off the input line and fleet sizes to one agent") {
     REQUIRE(wait_for_plain_after(s, before, "Authentication header", 15000));
 
     // The probe runs on the turn thread while the frame is live. The
-    // input line must still accept text afterwards.
+    // input line must still accept text afterwards. Live-row paint is a
+    // cell diff; macOS CI often never emits "clean-input-zz" as one run
+    // (same block-cursor split as tests/test_line_editor.cpp). Submitting
+    // echoes the accepted buffer into scrollback.
     const std::size_t before_type = s.output().size();
     s.send("clean-input-zz");
-    REQUIRE(wait_for_plain_after(s, before_type, "clean-input-zz", 10000));
+    bool input_ok = wait_for_plain_after(s, before_type, "clean-input-zz", 10000);
+    if (!input_ok) {
+        s.send("\r");
+        input_ok = wait_for_plain_after(s, before_type, "clean-input-zz", 20000);
+    }
+    if (!input_ok) {
+        std::string tail = s.output().size() > before_type
+            ? PtySession::strip_ansi(s.output().substr(before_type))
+            : std::string{};
+        if (tail.size() > 500) tail = tail.substr(tail.size() - 500);
+        INFO("plain tail after type: " << tail);
+    }
+    REQUIRE(input_ok);
 
     const std::string raw = s.output();
     CHECK(raw.find("openrouter_response") == std::string::npos);
