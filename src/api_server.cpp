@@ -10425,6 +10425,7 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         } else {
             m["ok"] = jbool(resp.ok);
             if (resp.gate_approved) m["gate_approved"] = jbool(true);
+            if (resp.budget_exhausted) m["budget_exhausted"] = jbool(true);
             if (!resp.ok) {
                 // Never proxy the provider's free-form error message —
                 // log it operator-side, ship a fixed taxonomy on the wire.

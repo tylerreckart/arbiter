@@ -179,8 +179,13 @@ struct ApiResponse {
     std::string reasoning;
     // Set when gate-mode advisor returned CONTINUE on the terminating turn.
     // Outer loops (LoopManager) use this to distinguish "task done" from
-    // "send() returned ok but hit kMaxTurns before the gate could fire".
+    // "send() returned ok but hit the tool budget before the gate could fire".
     bool gate_approved = false;
+    // Set when the tool budget was exhausted with tool calls still pending
+    // and the runtime took one more model call with tool execution disabled.
+    // A successful final answer stays ok=true so callers keep the work;
+    // plans also continue when this flag is set on a non-cancel failure.
+    bool budget_exhausted = false;
     // choices[0].logprobs.content, in order. Empty when the provider did
     // not return logprobs (or returned null).
     std::vector<TokenLogprobs> logprobs;
@@ -325,6 +330,21 @@ public:
         }
         std::lock_guard<std::mutex> lk(preflight_mu_);
         preflight_ = std::move(fn);
+    }
+
+    // Test seam. Production leaves this empty: complete()/stream() do one
+    // null check and then the existing wire path, so a normal turn pays
+    // nothing else. When set, the function replaces the provider call
+    // (no socket, no retry). Not safe to swap while a call is in flight.
+    using ScriptedTransport = std::function<ApiResponse(
+        const ApiRequest& req, bool streaming, const StreamCallback* on_delta)>;
+    void set_scripted_transport(ScriptedTransport fn) { scripted_ = std::move(fn); }
+    void clear_scripted_transport() { scripted_ = nullptr; }
+    [[nodiscard]] bool has_scripted_transport() const {
+        return static_cast<bool>(scripted_);
+    }
+    void copy_scripted_transport_from(const ApiClient& other) {
+        scripted_ = other.scripted_;
     }
 
     // Pure helpers — request body builders.  Public so unit tests can verify
@@ -473,6 +493,7 @@ private:
     ProviderCircuitBreaker* breaker_ = nullptr;
     Metrics*                metrics_ = nullptr;
     ReasoningCallback       reasoning_cb_;
+    ScriptedTransport       scripted_;
 
     // Connection lifecycle per provider.
     bool ensure_connection(const Provider& p, Conn& c);

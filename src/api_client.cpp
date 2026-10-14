@@ -1430,6 +1430,7 @@ ApiResponse ApiClient::complete(const ApiRequest& req) {
         r.error      = "request cancelled";
         return r;
     }
+    if (scripted_) return scripted_(req, /*streaming=*/false, nullptr);
     cancelled_.store(false);
     static const int kMaxAttempts = 4;
     const Provider& prov = provider_for(req.model);
@@ -1927,6 +1928,7 @@ ApiResponse ApiClient::stream(const ApiRequest& req, StreamCallback cb) {
         r.error      = "request cancelled";
         return r;
     }
+    if (scripted_) return scripted_(req, /*streaming=*/true, &cb);
     cancelled_.store(false);
     static const int kMaxAttempts = 3;
     const Provider& prov = provider_for(req.model);

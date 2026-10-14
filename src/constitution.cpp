@@ -1265,6 +1265,8 @@ std::string Constitution::to_json() const {
     m["personality"]  = jstr(personality);
     m["brevity"]     = jstr(brevity_to_string(brevity));
     m["max_tokens"]  = jnum(static_cast<double>(max_tokens));
+    if (max_turns && *max_turns > 0)
+        m["max_turns"] = jnum(static_cast<double>(*max_turns));
     m["temperature"] = jnum(temperature);
     m["model"]        = jstr(model);
     if (!advisor_model.empty())
@@ -1410,6 +1412,8 @@ Constitution Constitution::from_json(const std::string& json_str) {
     c.personality   = root->get_string("personality");
     c.brevity       = brevity_from_string(root->get_string("brevity", "full"));
     c.max_tokens    = root->get_int("max_tokens", 1024);
+    if (auto mt = root->get("max_turns"); mt && mt->is_number())
+        c.max_turns = static_cast<int>(mt->as_number());
     c.temperature   = root->get_number("temperature", 0.3);
     c.model         = root->get_string("model", "anthropic/claude-sonnet-5");
     c.advisor_model = root->get_string("advisor_model");  // "" if absent

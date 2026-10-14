@@ -276,8 +276,10 @@ public:
 
     // Send message to a specific agent.
     // Runs an agentic dispatch loop: if the agent's response contains
-    // /fetch or /mem commands, they are executed and results fed back
-    // automatically (up to 6 turns).
+    // tool commands, they are executed and results fed back automatically.
+    // The budget is the agent's constitution max_turns, else
+    // ARBITER_MAX_TURNS, else 6 at depth 0 and 12 deeper. Hitting the cap
+    // with tools still pending takes one tool-disabled final-answer call.
     // `original_query` pins the advisor gate's [ORIGINAL TASK] context across
     // self-prompt continuations and suppresses intent reroute (fresh ingress
     // only).  When empty, defaults to `message` (the first turn of a fresh

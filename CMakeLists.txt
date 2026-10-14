@@ -1876,6 +1876,52 @@ if(INDEX_BUILD_TESTS)
     )
     add_test(NAME unit_advisor_gate COMMAND unit_advisor_gate)
 
+    # Tool-loop budget: partial delegation results, the one final-answer
+    # call, constitution/env/depth precedence, and plans that continue
+    # past a capped phase. Scripted transport — no provider sockets.
+    add_executable(unit_tool_budget
+        tests/test_tool_budget.cpp
+        src/orchestrator.cpp
+        src/agent.cpp
+        src/api_client.cpp
+        src/circuit_breaker.cpp
+        src/metrics.cpp
+        src/json.cpp
+        src/constitution.cpp
+        src/commands.cpp
+        src/advisor.cpp
+        src/advisor_gate.cpp
+        src/presence.cpp
+        src/intent.cpp
+        src/decision.cpp
+        src/intent_route.cpp
+        src/embed_route.cpp
+        src/embed_onnx_stub.cpp
+        src/logger.cpp
+        src/context_compaction.cpp
+        src/model_context.cpp
+        src/model_catalog.cpp
+        src/message_codec.cpp
+        src/atomic_file.cpp
+        src/tui/stream_filter.cpp
+        src/tui/block_parser.cpp
+        src/ssrf_guard.cpp
+        src/workspace_map.cpp
+        src/workspace_root.cpp
+    )
+    target_include_directories(unit_tool_budget PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}
+    )
+    target_link_libraries(unit_tool_budget PRIVATE
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        CURL::libcurl
+        Threads::Threads
+    )
+    add_test(NAME unit_tool_budget COMMAND unit_tool_budget)
+
     # Always-on presence: signal parser, watch globs, injection framing.
     # Tiny target — run_presence_review is linked but not exercised here.
     add_executable(unit_presence

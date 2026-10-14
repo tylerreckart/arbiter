@@ -72,6 +72,7 @@ Deleting a folder unfiles its conversations (`folder_id` cleared) rather than ca
 | `goal`        | string  | What this agent is trying to accomplish. |
 | `brevity`     | string  | `"lite"` \| `"full"` \| `"ultra"`. |
 | `max_tokens`  | integer | Response cap per turn. |
+| `max_turns`   | int?    | Tool-loop budget: model calls that may still emit tools. Omit it to use `ARBITER_MAX_TURNS`, then `6` at depth 0 and `12` at depth 1 or deeper. The one final-answer call after the budget is exhausted is outside this count. See [Environment → Tool loop and delegation](../cli/environment.md#tool-loop-and-delegation). |
 | `temperature` | number  | 0.0–2.0. |
 | `rules`       | array<string> | Behavioral constraints. |
 | `capabilities`| array<string> | Tools this agent uses (used by master for routing). |

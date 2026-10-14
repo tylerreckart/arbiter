@@ -78,7 +78,7 @@ Where the gate fires inside the dispatch loop:
 
 4. The runtime parses the reply into one of:
    - `CONTINUE` — the loop terminates and the response returns to the caller.
-   - `REDIRECT` — the runtime synthesises a `[advisor redirect — synthetic user turn]` envelope wrapping the guidance and feeds it back to the executor as the next input. Counts against both `max_redirects` and the executor's per-turn budget (`kMaxTurns = 6`).
+   - `REDIRECT` — the runtime synthesises a `[advisor redirect — synthetic user turn]` envelope wrapping the guidance and feeds it back to the executor as the next input. Counts against both `max_redirects` and the executor's tool-loop budget (`max_turns`, else `ARBITER_MAX_TURNS`, else 6 at depth 0 and 12 deeper).
    - `HALT` — the runtime fires the `escalation` callback, then `stream_end_cb_(ok: false)`, and returns an `ApiResponse{ok: false, error_type: "advisor_halt", halt_reason: <reason>}`.
 
 5. When `redirects_used >= max_redirects`, the runtime synthesises a `HALT` with reason `"advisor redirect budget exhausted"` rather than allowing infinite redirects.
