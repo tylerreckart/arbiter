@@ -189,4 +189,23 @@ private:
     void continue_until_done(ApiResponse& resp, StreamCallback cb);
 };
 
+// Per-turn executor model. Empty means "use the agent's configured model"
+// and does not hide an outer scope. Pass suspend_outer to clear an outer
+// override for a nested turn (delegated agents keep their own model).
+// Thread-local so concurrent panes do not rewrite a shared Constitution.
+class TurnModelScope {
+public:
+    explicit TurnModelScope(std::string model, bool suspend_outer = false);
+    ~TurnModelScope();
+    TurnModelScope(const TurnModelScope&) = delete;
+    TurnModelScope& operator=(const TurnModelScope&) = delete;
+
+private:
+    std::string prev_;
+    bool active_ = false;
+};
+
+// config.model, unless the current TurnModelScope installed an override.
+std::string effective_executor_model(const std::string& configured);
+
 } // namespace arbiter

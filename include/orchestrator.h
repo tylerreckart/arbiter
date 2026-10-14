@@ -6,6 +6,7 @@
 #include "commands.h"
 #include "event_routing.h"
 #include "intent.h"
+#include "intent_route.h"
 #include <atomic>
 #include <functional>
 #include <map>
@@ -563,7 +564,10 @@ private:
         std::string preamble;
         Intent      intent;
         bool        applied = false;
+        // Empty keeps the executing agent's configured model.
+        std::string executor_model;
     };
+    IntentRouteCache intent_route_cache_;
     IntentIngress apply_intent_ingress(const std::string& agent_id,
                                        const std::string& classify_text,
                                        bool fresh_ingress = true);

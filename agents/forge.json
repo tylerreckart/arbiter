@@ -51,5 +51,10 @@
     "/advise",
     "/schedule",
     "/mcp"
+  ],
+  "routing_examples": [
+    "The deploy pipeline is failing in CI",
+    "Add a health check to the container",
+    "The rollout is stuck"
   ]
 }

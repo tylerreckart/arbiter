@@ -49,5 +49,10 @@
     "/lesson",
     "/advise",
     "/mcp"
+  ],
+  "routing_examples": [
+    "The button focus ring is missing",
+    "This React list re-renders on every keystroke",
+    "The dialog does not trap focus"
   ]
 }

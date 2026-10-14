@@ -20,6 +20,11 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   this repository. `install.sh` is at the repo root and is fetched from
   GitHub raw (`main`) or attached to each GitHub Release.
 
+### Added
+- **Luna logprob decision backend (prototype).** `decide(state, question, options)` with a swappable `DecisionBackend`. `LunaLogprobBackend` asks OpenRouter for `openai/gpt-6-luna` with reasoning off, one output token, and logprobs. Each observed label's probability is `exp(logprob)`; labels the response omitted are unknown, not zero, and confidence uses that raw probability over the full option count. `ARBITER_INTENT_SHADOW=luna` logs that decision beside ingress classification and does not change routing. `arbiter-decision-smoke` is the live check; it refuses to invent a distribution when no API key is set. OpenRouter's catalogue does not advertise `logprobs` for this model. A live call returns them, but only one `top_logprobs` entry, and `provider.require_parameters=true` 404s.
+- **Tiered live intent router (default off).** `ARBITER_INTENT_LIVE=luna` routes depth-0 ingress with a local embedding model first and, below that cutoff, one Luna call that returns specialist and difficulty together. The call overlaps context loading, is bounded by `ARBITER_INTENT_LUNA_TIMEOUT_MS` (default 400 ms, a placeholder that needs tuning — a 2026-10-13 smoke was p50 1359 ms / p95 1564 ms), and is cached. Timeout or error uses the default agent instead of a generative classifier. Per-decision latency is logged as `intent_route`.
+- **Local embedding router.** `EmbeddingCentroidBackend` scores bge-small-en-v1.5 (int8 ONNX, BERT WordPiece, CLS pooling) against each specialist's description and optional `routing_examples`. The weights are fetched by SHA-256 and are not in the repo; a missing file or a sanitizer build keeps the heuristic. `ARBITER_INTENT_SHADOW=embed` logs the decision without changing the route. `arbiter-embed-bench` reports accuracy, Brier, ECE, and warm latency, and exits 0 when the model is absent.
+
 ## [0.13.11] — 2026-09-21
 
 - **Fleet dashboard pane (Phase C1).** The TUI consumes fleet SSE (`stream_id` +

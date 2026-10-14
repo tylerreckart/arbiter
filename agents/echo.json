@@ -42,5 +42,10 @@
     "/lesson",
     "/schedule",
     "/mcp"
+  ],
+  "routing_examples": [
+    "Draft a thread for the launch day",
+    "Turn this post into a carousel",
+    "Give the caption a hook"
   ]
 }

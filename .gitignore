@@ -1,5 +1,7 @@
 # Build artefacts
 /build/
+/embed-fetch/
+*.onnx
 /build-*/
 .cache/
 compile_commands.json

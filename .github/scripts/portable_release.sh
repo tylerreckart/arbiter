@@ -54,6 +54,58 @@ cmd_configure() {
     ${extra}
 }
 
+# The embedding router links ONNX Runtime when configure could fetch it.
+# The loader looks up the SONAME next to the binary ($ORIGIN / @loader_path).
+# Skip the unversioned libonnxruntime.dylib: that file is a second full
+# copy, and the install name is libonnxruntime.1.dylib.
+stage_onnxruntime() {
+  local build_dir="$1"
+  local stage="$2"
+  local bin="${build_dir}/arbiter"
+  local linked=0
+  if [ "$(uname -s)" = "Darwin" ]; then
+    if otool -L "${bin}" | grep -q onnxruntime; then
+      linked=1
+    fi
+  elif readelf -d "${bin}" 2>/dev/null | grep -q 'libonnxruntime\.so'; then
+    linked=1
+  fi
+  if [ "${linked}" -eq 0 ]; then
+    return 0
+  fi
+
+  local libdir=""
+  local candidate
+  for candidate in "${build_dir}"/embed-fetch/onnxruntime-*/lib; do
+    if [ -d "${candidate}" ]; then
+      libdir="${candidate}"
+      break
+    fi
+  done
+  if [ -z "${libdir}" ]; then
+    echo "portable_release: arbiter links ONNX Runtime but embed-fetch has no lib dir" >&2
+    exit 1
+  fi
+
+  shopt -s nullglob
+  local f base staged=0
+  for f in "${libdir}"/libonnxruntime.so.* "${libdir}"/libonnxruntime.*.dylib; do
+    base="$(basename "${f}")"
+    if [ -L "${f}" ]; then
+      ln -sfn "$(basename "$(readlink "${f}")")" "${stage}/${base}"
+    else
+      install -m 755 "${f}" "${stage}/${base}"
+    fi
+    staged=1
+  done
+  shopt -u nullglob
+  if [ "${staged}" -eq 0 ]; then
+    echo "portable_release: arbiter links ONNX Runtime but no library was copied from ${libdir}" >&2
+    exit 1
+  fi
+  echo "portable_release: staged ONNX Runtime from ${libdir}"
+}
+
 cmd_package() {
   local build_dir="${1:?build-dir required}"
   local os_slug="${2:?os-slug required}"
@@ -65,6 +117,7 @@ cmd_package() {
 
   mkdir -p "${stage}"
   install -m 755 "${build_dir}/arbiter" "${stage}/arbiter"
+  stage_onnxruntime "${build_dir}" "${stage}"
   if [ ! -f "${build_dir}/${opentui_lib}" ]; then
     echo "portable_release: missing staged OpenTUI library: ${build_dir}/${opentui_lib}" >&2
     ls -la "${build_dir}/" "${build_dir}/opentui/" >&2 || true
@@ -136,6 +189,22 @@ cmd_smoke() {
     fi
     if grep -E 'libopentui\.so => .*/build/' /tmp/arbiter-ldd.txt; then
       echo "portable check failed: libopentui resolved via build-tree path" >&2
+      exit 1
+    fi
+    if grep -q 'libonnxruntime\.so' /tmp/arbiter-readelf.txt; then
+      if grep -E 'libonnxruntime\.so[^ ]* => not found' /tmp/arbiter-ldd.txt; then
+        echo "portable check failed: libonnxruntime not resolved from \$ORIGIN" >&2
+        exit 1
+      fi
+      if ! grep -E "libonnxruntime\.so\.1 => ${smoke}/libonnxruntime\.so" /tmp/arbiter-ldd.txt; then
+        echo "portable check failed: libonnxruntime did not resolve next to arbiter" >&2
+        exit 1
+      fi
+    fi
+  fi
+  if [ "$(uname -s)" = "Darwin" ] && grep -q onnxruntime /tmp/arbiter-otool.txt; then
+    if [ ! -e "${smoke}/libonnxruntime.1.dylib" ]; then
+      echo "portable check failed: libonnxruntime.1.dylib missing beside arbiter" >&2
       exit 1
     fi
   fi

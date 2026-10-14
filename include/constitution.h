@@ -159,6 +159,10 @@ struct Constitution {
     // not event-routed (events fall through to index by default).
     std::vector<std::string> event_types;
 
+    // Optional utterances that pull this specialist's embedding centroid
+    // toward real requests. Not part of the system prompt. Empty is fine.
+    std::vector<std::string> routing_examples;
+
     // --- Computed ---
     std::string build_system_prompt() const;
 

@@ -6,6 +6,26 @@
 
 namespace arbiter {
 
+namespace {
+thread_local std::string tl_executor_model;
+}
+
+TurnModelScope::TurnModelScope(std::string model, bool suspend_outer) {
+    if (model.empty() && !suspend_outer) return;
+    prev_ = tl_executor_model;
+    tl_executor_model = std::move(model);
+    active_ = true;
+}
+
+TurnModelScope::~TurnModelScope() {
+    if (active_) tl_executor_model = std::move(prev_);
+}
+
+std::string effective_executor_model(const std::string& configured) {
+    if (!tl_executor_model.empty()) return tl_executor_model;
+    return configured;
+}
+
 Agent::Agent(const std::string& id, Constitution config, ApiClient& client)
     : id_(id), config_(std::move(config)), client_(client)
 {
@@ -115,7 +135,7 @@ void Agent::continue_until_done(ApiResponse& resp, StreamCallback cb) {
         maybe_compact(/*force=*/false);
 
         ApiRequest req;
-        req.model         = config_.model;
+        req.model         = effective_executor_model(config_.model);
         req.system_prompt = config_.build_system_prompt();
         req.max_tokens    = config_.max_tokens;
         req.temperature   = config_.temperature;
@@ -233,7 +253,7 @@ ApiResponse Agent::send_continue() {
     maybe_compact(/*force=*/false);
 
     ApiRequest req;
-    req.model         = config_.model;
+    req.model         = effective_executor_model(config_.model);
     req.system_prompt = config_.build_system_prompt();
     req.max_tokens    = config_.max_tokens;
     req.temperature   = config_.temperature;
@@ -281,7 +301,7 @@ ApiResponse Agent::stream_continue(StreamCallback cb) {
     maybe_compact(/*force=*/false);
 
     ApiRequest req;
-    req.model         = config_.model;
+    req.model         = effective_executor_model(config_.model);
     req.system_prompt = config_.build_system_prompt();
     req.max_tokens    = config_.max_tokens;
     req.temperature   = config_.temperature;

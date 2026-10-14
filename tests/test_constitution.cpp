@@ -582,3 +582,18 @@ TEST_CASE("file_backed_agent_id prefers stem for Title Case display names") {
     c.name = "research";
     CHECK(file_backed_agent_id(c, "scout") == "research");
 }
+
+TEST_CASE("routing_examples round-trip and stay out of the system prompt") {
+    auto c = Constitution::from_json(R"({
+        "name": "Scout",
+        "role": "research-analyst",
+        "goal": "Find sources",
+        "routing_examples": ["Cite the primary paper", ""]
+    })");
+    REQUIRE(c.routing_examples.size() == 2);
+    CHECK(c.routing_examples[0] == "Cite the primary paper");
+    auto again = Constitution::from_json(c.to_json());
+    CHECK(again.routing_examples.size() == 2);
+    CHECK(again.routing_examples[0] == "Cite the primary paper");
+    CHECK(c.build_system_prompt().find("Cite the primary paper") == std::string::npos);
+}

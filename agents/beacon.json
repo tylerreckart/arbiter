@@ -41,5 +41,10 @@
     "/lesson",
     "/schedule",
     "/mcp"
+  ],
+  "routing_examples": [
+    "Position this product against the incumbent",
+    "Write the launch messaging for the new tier",
+    "Who is this for, and why do they switch?"
   ]
 }

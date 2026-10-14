@@ -3,6 +3,9 @@
 #include "advisor.h"
 #include "presence.h"
 #include "intent.h"
+#include "decision.h"
+#include "intent_route.h"
+#include "embed_route.h"
 #include "intent_history_mirror.h"
 #include "atomic_file.h"
 #include "commands.h"
@@ -10,7 +13,9 @@
 #include "context_compaction.h"
 #include "message_codec.h"
 #include "tui/stream_filter.h"
+#include <atomic>
 #include <cctype>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -42,6 +47,41 @@ thread_local int         tl_stream_depth = 0;
 // spawning pane's TLS callback routing.  Thread-local so concurrent panes
 // don't clobber each other; workers capture a copy at spawn time.
 thread_local std::function<void()> tl_worker_pane_binder;
+
+// How often the live Luna worker's watcher polls the router's cancel flag.
+// Not a routing cutoff — those live in IntentRouteConfig.
+constexpr int kLunaCancelPollMs = 5;
+
+// Lesson/todo prefetch overlapped with the live Luna call. Consumed only
+// when the routed agent matches; a mismatch loads that agent's context
+// on the existing path.
+struct IngressPrefetch {
+    std::string agent_id;
+    bool have_lesson = false;
+    std::string lesson;
+    bool have_todo = false;
+    std::string todo;
+};
+thread_local IngressPrefetch tl_ingress_prefetch;
+
+void clear_ingress_prefetch() { tl_ingress_prefetch = {}; }
+
+bool take_ingress_prefetch(const std::string& agent_id,
+                           std::string& lesson, bool& have_lesson,
+                           std::string& todo, bool& have_todo) {
+    if (tl_ingress_prefetch.agent_id != agent_id) {
+        clear_ingress_prefetch();
+        have_lesson = false;
+        have_todo = false;
+        return false;
+    }
+    have_lesson = tl_ingress_prefetch.have_lesson;
+    have_todo = tl_ingress_prefetch.have_todo;
+    lesson = std::move(tl_ingress_prefetch.lesson);
+    todo = std::move(tl_ingress_prefetch.todo);
+    clear_ingress_prefetch();
+    return have_lesson || have_todo;
+}
 
 struct StreamScope {
     int         prev_id;
@@ -164,6 +204,29 @@ void Orchestrator::load_agents(const std::string& dir) {
             }
         }
     }
+    // Centroids are a startup cost only when live or shadow routing will
+    // actually embed. A missing model is ignored; ingress falls back.
+    if (!intent_live_luna_enabled() && !intent_shadow_embed_enabled()) return;
+    std::vector<IntentRosterEntry> roster;
+    {
+        std::lock_guard<std::mutex> lock(agents_mutex_);
+        roster.reserve(agents_.size());
+        for (const auto& [id, agent] : agents_) {
+            const auto& c = agent->config();
+            IntentRosterEntry entry;
+            entry.id = id;
+            entry.role = c.role;
+            entry.goal = c.goal;
+            entry.capabilities = c.capabilities;
+            entry.routing_examples = c.routing_examples;
+            roster.push_back(std::move(entry));
+        }
+    }
+    try {
+        auto& router = EmbeddingRouter::instance();
+        if (router.prepare())
+            router.precompute(embed_options_from_roster(roster));
+    } catch (...) {}
 }
 
 // Build an AgentInvoker that runs a sub-agent through the full dispatch loop.
@@ -852,6 +915,7 @@ Orchestrator::apply_intent_ingress(const std::string& agent_id,
                                    bool fresh_ingress) {
     IntentIngress result;
     result.agent_id = agent_id.empty() ? "index" : agent_id;
+    clear_ingress_prefetch();
 
     const Constitution* cfg_src = &index_master_->config();
     try {
@@ -877,43 +941,133 @@ Orchestrator::apply_intent_ingress(const std::string& agent_id,
         for (const auto& [id, agent] : agents_) {
             if (in.roster.size() >= kIntentRosterMax) break;
             const auto& c = agent->config();
-            in.roster.push_back({id, c.role, c.goal, c.capabilities});
+            IntentRosterEntry entry;
+            entry.id = id;
+            entry.role = c.role;
+            entry.goal = c.goal;
+            entry.capabilities = c.capabilities;
+            entry.routing_examples = c.routing_examples;
+            in.roster.push_back(std::move(entry));
         }
     }
 
-    IntentLlmFn llm;
-    if (icfg.mode == "hybrid" || icfg.mode == "llm") {
-        std::string model = icfg.model;
-        if (model.empty()) model = cfg_src->advisor.model;
-        if (model.empty()) model = index_master_->config().advisor.model;
-        if (!model.empty()) {
-            const std::string cost_id = result.agent_id;
-            llm = [this, model, cost_id](const std::string& user_prompt) -> std::string {
-                ApiRequest req;
-                req.model = model;
-                req.max_tokens = 512;
-                req.include_temperature = false;
-                req.system_prompt = default_intent_prompt();
-                req.messages = {{"user", user_prompt}};
-                ApiResponse resp = client_.complete(req);
-                if (cost_cb_) cost_cb_(cost_id, model, resp);
-                if (!resp.ok) return {};
-                return resp.content;
-            };
+    bool live_ran = false;
+    if (intent_live_luna_enabled()) {
+        live_ran = true;
+        const IntentRouteConfig route_cfg = intent_route_config_from_env();
+        const std::string luna_model = route_cfg.luna_model.empty()
+                                           ? std::string(kLunaModelId)
+                                           : route_cfg.luna_model;
+        // Reuses ApiClient's pooled keep-alive connection. The watcher
+        // cancels only this call's token; it does not hard-cancel the client.
+        LunaDecideFn luna = [this, luna_model](const DecisionRequest& request,
+                                               const std::atomic<bool>& cancel) {
+            auto token = std::make_shared<CancelToken>();
+            RequestCancelScope scope(client_, token);
+            std::atomic<bool> stop{false};
+            std::thread watcher([&] {
+                while (!stop.load(std::memory_order_acquire)) {
+                    if (cancel.load(std::memory_order_acquire)) {
+                        token->request_cancel();
+                        return;
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(kLunaCancelPollMs));
+                }
+            });
+            struct WatchJoin {
+                std::atomic<bool>& stop;
+                std::thread& watcher;
+                ~WatchJoin() {
+                    stop.store(true, std::memory_order_release);
+                    if (watcher.joinable()) watcher.join();
+                }
+            } join{stop, watcher};
+            LunaLogprobBackend backend(client_, luna_model);
+            return backend.decide(request);
+        };
+        ContextLoadFn load = [this, &in](const std::string& speculative) {
+            IngressPrefetch pre;
+            pre.agent_id = speculative;
+            if (lesson_invoker_cb_) {
+                try {
+                    pre.lesson = lesson_invoker_cb_("preamble", in.text, speculative);
+                    pre.have_lesson = true;
+                } catch (...) {}
+            }
+            if (todo_invoker_cb_) {
+                try {
+                    pre.todo = todo_invoker_cb_("list", "", speculative);
+                    pre.have_todo = true;
+                } catch (...) {}
+            }
+            tl_ingress_prefetch = std::move(pre);
+        };
+        EmbedDecideFn embed;
+        try {
+            auto& router = EmbeddingRouter::instance();
+            if (router.ready() || router.prepare()) {
+                const double temperature = route_cfg.embed_temperature;
+                embed = [temperature](const DecisionRequest& request) {
+                    return EmbeddingRouter::instance().decide(request, temperature);
+                };
+            }
+        } catch (...) {}
+        try {
+            IntentRouteOutcome outcome = route_intent_live(
+                in, icfg, route_cfg, intent_route_cache_, luna, load, embed);
+            result.intent = std::move(outcome.intent);
+            result.applied = intent_route_should_apply(
+                                 icfg, result.intent, in.requested_agent, fresh_ingress) &&
+                             has_agent(result.intent.target_agent);
+            if (result.applied)
+                result.agent_id = result.intent.target_agent;
+            if (outcome.timings.choose_model) {
+                const Constitution* exec = cfg_src;
+                try {
+                    exec = &get_constitution(result.agent_id);
+                } catch (...) {}
+                result.executor_model = select_executor_model(
+                    exec->model, exec->advisor.model, outcome.timings.difficulty,
+                    outcome.timings.difficulty_known, route_cfg);
+            }
+        } catch (...) {
+            return result;  // never break dispatch
         }
-    }
+    } else {
+        IntentLlmFn llm;
+        if (icfg.mode == "hybrid" || icfg.mode == "llm") {
+            std::string model = icfg.model;
+            if (model.empty()) model = cfg_src->advisor.model;
+            if (model.empty()) model = index_master_->config().advisor.model;
+            if (!model.empty()) {
+                const std::string cost_id = result.agent_id;
+                llm = [this, model, cost_id](const std::string& user_prompt) -> std::string {
+                    ApiRequest req;
+                    req.model = model;
+                    req.max_tokens = 512;
+                    req.include_temperature = false;
+                    req.system_prompt = default_intent_prompt();
+                    req.messages = {{"user", user_prompt}};
+                    ApiResponse resp = client_.complete(req);
+                    if (cost_cb_) cost_cb_(cost_id, model, resp);
+                    if (!resp.ok) return {};
+                    return resp.content;
+                };
+            }
+        }
 
-    try {
-        result.intent = resolve_intent(in, icfg, llm);
-    } catch (...) {
-        return result;  // never break dispatch
-    }
+        try {
+            result.intent = resolve_intent(in, icfg, llm);
+        } catch (...) {
+            return result;  // never break dispatch
+        }
 
-    result.applied = intent_should_apply(icfg, result.intent, in.requested_agent,
-                                         fresh_ingress) &&
-                     has_agent(result.intent.target_agent);
-    if (result.applied)
-        result.agent_id = result.intent.target_agent;
+        result.applied = intent_should_apply(icfg, result.intent, in.requested_agent,
+                                             fresh_ingress) &&
+                         has_agent(result.intent.target_agent);
+        if (result.applied)
+            result.agent_id = result.intent.target_agent;
+    }
 
     if (result.applied)
         result.preamble = format_intent_preamble(result.intent, true);
@@ -927,6 +1081,18 @@ Orchestrator::apply_intent_ingress(const std::string& agent_id,
         ev.applied_agent = result.agent_id;
         ev.applied = result.applied;
         try { intent_cb_(ev); } catch (...) {}
+    }
+
+    // Shadow logs a second Luna call beside the heuristic/LLM decision.
+    // Live mode already called Luna (or skipped it on a strong heuristic);
+    // do not call it again.
+    if (!live_ran) {
+        try {
+            if (intent_shadow_embed_enabled())
+                shadow_embed_decision(in.text, in.roster, result.intent);
+            else
+                shadow_intent_decision(client_, in.text, in.roster, result.intent);
+        } catch (...) {}
     }
     return result;
 }
@@ -970,6 +1136,7 @@ ApiResponse Orchestrator::send_internal(const std::string& agent_id,
         routed_id = ingress.agent_id;
     } else if (depth == 0) {
         intent_source_hint_.clear();
+        clear_ingress_prefetch();
     }
 
     if (routed_id == "index") {
@@ -985,9 +1152,11 @@ ApiResponse Orchestrator::send_internal(const std::string& agent_id,
             agent_ptr   = (agent_id == "index") ? index_master_.get()
                                                 : &get_agent(agent_id);
             routed_id   = agent_id;
+            ingress.executor_model.clear();
             current_msg = (routed_id == "index")
                 ? global_status() + "\n\nQUERY: " + message
                 : message;
+            TurnModelScope model_scope(ingress.executor_model, depth > 0);
             return run_dispatch(*agent_ptr, routed_id, current_msg, depth,
                                 shared_cache, orig_q);
         }
@@ -1004,6 +1173,7 @@ ApiResponse Orchestrator::send_internal(const std::string& agent_id,
         if (!ingress.preamble.empty())
             current_msg = ingress.preamble + "\n\n" + current_msg;
     }
+    TurnModelScope model_scope(ingress.executor_model, depth > 0);
     return run_dispatch(*agent_ptr, routed_id, current_msg, depth, shared_cache, orig_q);
 }
 
@@ -1031,10 +1201,17 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
     // CONTEXT] block which carries pipeline memory + open todos;
     // adding a pitfalls section there bloats the prompt without
     // adding new signal.
+    std::string pref_lesson;
+    std::string pref_todo;
+    bool pref_lesson_ok = false;
+    bool pref_todo_ok = false;
+    const bool prefetched = depth == 0 && take_ingress_prefetch(
+        agent_id, pref_lesson, pref_lesson_ok, pref_todo, pref_todo_ok);
     if (lesson_invoker_cb_ && depth == 0 && !current_msg.empty()) {
         try {
-            std::string block =
-                lesson_invoker_cb_("preamble", current_msg, agent_id);
+            std::string block = (prefetched && pref_lesson_ok)
+                ? pref_lesson
+                : lesson_invoker_cb_("preamble", current_msg, agent_id);
             if (!block.empty() &&
                 block.compare(0, 4, "ERR:") != 0 &&
                 block.compare(0, 11, "(no lessons") != 0) {
@@ -1054,7 +1231,9 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
     // in-flight board across a threshold compact.
     if (todo_invoker_cb_ && depth == 0 && !current_msg.empty()) {
         try {
-            std::string body = todo_invoker_cb_("list", "", agent_id);
+            std::string body = (prefetched && pref_todo_ok)
+                ? pref_todo
+                : todo_invoker_cb_("list", "", agent_id);
             if (!body.empty() &&
                 body.compare(0, 4, "ERR:") != 0 &&
                 body.compare(0, 10, "(no todos)") != 0) {
@@ -1542,8 +1721,10 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     IntentHistoryMirror hist_mirror;
     if (original_query.empty() && !ingress_skips_intent_reroute(agent_id))
         ingress = apply_intent_ingress(agent_id, orig_q, /*fresh_ingress=*/true);
-    else
+    else {
         intent_source_hint_.clear();
+        clear_ingress_prefetch();
+    }
     std::string dispatch_id = ingress.agent_id.empty()
         ? (agent_id.empty() ? "index" : agent_id)
         : ingress.agent_id;
@@ -1580,6 +1761,7 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
             for (auto& p : parts) current_parts.push_back(std::move(p));
         } catch (...) {
             dispatch_id = agent_id.empty() ? "index" : agent_id;
+            ingress.executor_model.clear();
             if (dispatch_id == "index") {
                 agent_ptr = index_master_.get();
                 attach_index_prefix();
@@ -1592,6 +1774,8 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
         agent_ptr = index_master_.get();
         attach_index_prefix();
     }
+
+    TurnModelScope model_scope(ingress.executor_model);
 
     // Pre-turn lesson + open-todo injection.  send_streaming is always
     // depth 0 (top-level TUI/API path); mirror run_dispatch so streaming
@@ -1609,10 +1793,17 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
         lead.text = preamble;
         current_parts.insert(current_parts.begin(), std::move(lead));
     };
+    std::string pref_lesson;
+    std::string pref_todo;
+    bool pref_lesson_ok = false;
+    bool pref_todo_ok = false;
+    const bool prefetched = take_ingress_prefetch(
+        dispatch_id, pref_lesson, pref_lesson_ok, pref_todo, pref_todo_ok);
     if (lesson_invoker_cb_ && !message.empty()) {
         try {
-            std::string block =
-                lesson_invoker_cb_("preamble", message, dispatch_id);
+            std::string block = (prefetched && pref_lesson_ok)
+                ? pref_lesson
+                : lesson_invoker_cb_("preamble", message, dispatch_id);
             if (!block.empty() &&
                 block.compare(0, 4, "ERR:") != 0 &&
                 block.compare(0, 11, "(no lessons") != 0) {
@@ -1622,7 +1813,9 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     }
     if (todo_invoker_cb_ && !message.empty()) {
         try {
-            std::string body = todo_invoker_cb_("list", "", dispatch_id);
+            std::string body = (prefetched && pref_todo_ok)
+                ? pref_todo
+                : todo_invoker_cb_("list", "", dispatch_id);
             if (!body.empty() &&
                 body.compare(0, 4, "ERR:") != 0 &&
                 body.compare(0, 10, "(no todos)") != 0) {

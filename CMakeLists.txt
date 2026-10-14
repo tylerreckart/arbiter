@@ -138,6 +138,13 @@ if(NOT TARGET SQLite3::SQLite3 AND TARGET SQLite::SQLite3)
     add_library(SQLite3::SQLite3 ALIAS SQLite::SQLite3)
 endif()
 
+include(${CMAKE_SOURCE_DIR}/cmake/FetchOnnxEmbed.cmake)
+if(ARBITER_HAS_ONNXRUNTIME)
+    set(ARBITER_EMBED_ONNX_SOURCE src/embed_onnx.cpp)
+else()
+    set(ARBITER_EMBED_ONNX_SOURCE src/embed_onnx_stub.cpp)
+endif()
+
 # --- Source files ---
 set(ARBITER_SOURCES
     src/main.cpp
@@ -195,6 +202,10 @@ set(ARBITER_SOURCES
     src/constitution.cpp
     src/orchestrator.cpp
     src/intent.cpp
+    src/decision.cpp
+    src/intent_route.cpp
+    src/embed_route.cpp
+    ${ARBITER_EMBED_ONNX_SOURCE}
     src/reconcile.cpp
     src/advisor_gate.cpp
     src/advisor.cpp
@@ -362,6 +373,7 @@ target_sources(arbiter PRIVATE
     src/tui/opentui/pane_frame.cpp
 )
 target_link_libraries(arbiter PRIVATE OpenTUI::core)
+arbiter_link_onnxruntime(arbiter)
 
 # OpenTUI ships as a shared library that must travel with the arbiter
 # binary.  Stage a copy next to the executable and use a same-directory
@@ -409,6 +421,58 @@ install(DIRECTORY themes/ DESTINATION share/arbiter/themes
 
 target_compile_definitions(arbiter PRIVATE
     ARBITER_THEMES_DIR="${CMAKE_SOURCE_DIR}/themes")
+
+# Manual live check for the Luna logprob decision backend. Not a unit test:
+# it calls OpenRouter only when OPENROUTER_API_KEY is set, and exits 2
+# otherwise without inventing a distribution.
+add_executable(arbiter-decision-smoke
+    src/decision_smoke.cpp
+    src/decision.cpp
+    src/api_client.cpp
+    src/circuit_breaker.cpp
+    src/metrics.cpp
+    src/json.cpp
+    src/logger.cpp
+)
+target_include_directories(arbiter-decision-smoke PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${OPENSSL_INCLUDE_DIR}
+)
+target_link_libraries(arbiter-decision-smoke PRIVATE
+    Threads::Threads
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    CURL::libcurl
+)
+
+# Local embedding router bench. Prints accuracy, Brier, ECE, and warm
+# latency when the pinned model is present. Exits 0 without the model so
+# an offline configure still builds and ctest stays green.
+add_executable(arbiter-embed-bench
+    src/embed_bench.cpp
+    src/embed_route.cpp
+    ${ARBITER_EMBED_ONNX_SOURCE}
+    src/intent.cpp
+    src/decision.cpp
+    src/api_client.cpp
+    src/circuit_breaker.cpp
+    src/metrics.cpp
+    src/json.cpp
+    src/logger.cpp
+)
+target_include_directories(arbiter-embed-bench PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${OPENSSL_INCLUDE_DIR}
+)
+target_compile_definitions(arbiter-embed-bench PRIVATE
+    ARBITER_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_link_libraries(arbiter-embed-bench PRIVATE
+    Threads::Threads
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    CURL::libcurl
+)
+arbiter_link_onnxruntime(arbiter-embed-bench)
 
 # --- Tests ---
 # PTY-based integration tests that drive the real `arbiter` binary through
@@ -1088,6 +1152,12 @@ if(INDEX_BUILD_TESTS)
         src/api_client.cpp
         src/circuit_breaker.cpp
         src/metrics.cpp
+        src/intent.cpp
+        src/intent_route.cpp
+        src/embed_route.cpp
+        src/embed_onnx_stub.cpp
+        src/decision.cpp
+        src/logger.cpp
         src/styled_text.cpp
         src/theme.cpp
         src/tui/tui_design.cpp
@@ -1821,6 +1891,85 @@ if(INDEX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/third_party/doctest
     )
     add_test(NAME unit_intent COMMAND unit_intent)
+
+    # Logprob decision interface and the Luna backend. Mocked completions
+    # only — live calls are arbiter-decision-smoke.
+    add_executable(unit_decision
+        tests/test_decision.cpp
+        src/decision.cpp
+        src/api_client.cpp
+        src/circuit_breaker.cpp
+        src/metrics.cpp
+        src/json.cpp
+        src/logger.cpp
+    )
+    target_include_directories(unit_decision PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}
+    )
+    target_link_libraries(unit_decision PRIVATE
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        CURL::libcurl
+        Threads::Threads
+    )
+    add_test(NAME unit_decision COMMAND unit_decision)
+
+    # Live intent router: heuristic tier, one Luna call, timeout, cache,
+    # and overlap with context loading. Mocked decide(); no network.
+    add_executable(unit_intent_route
+        tests/test_intent_route.cpp
+        src/intent.cpp
+        src/intent_route.cpp
+        src/embed_route.cpp
+        src/embed_onnx_stub.cpp
+        src/decision.cpp
+        src/api_client.cpp
+        src/circuit_breaker.cpp
+        src/metrics.cpp
+        src/json.cpp
+        src/logger.cpp
+    )
+    target_include_directories(unit_intent_route PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}
+    )
+    target_link_libraries(unit_intent_route PRIVATE
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        CURL::libcurl
+        Threads::Threads
+    )
+    add_test(NAME unit_intent_route COMMAND unit_intent_route)
+
+    add_executable(unit_embed_route
+        tests/test_embed_route.cpp
+        src/embed_route.cpp
+        src/embed_onnx_stub.cpp
+        src/decision.cpp
+        src/api_client.cpp
+        src/circuit_breaker.cpp
+        src/metrics.cpp
+        src/json.cpp
+        src/logger.cpp
+    )
+    target_include_directories(unit_embed_route PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}
+    )
+    target_compile_definitions(unit_embed_route PRIVATE
+        ARBITER_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+    target_link_libraries(unit_embed_route PRIVATE
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        CURL::libcurl
+        Threads::Threads
+    )
+    add_test(NAME unit_embed_route COMMAND unit_embed_route)
+    add_test(NAME embed_bench COMMAND arbiter-embed-bench)
 
     # Intent reconcile: admit, contract compile, observe ΔS, JIT ensure
     # waves, verification mandate, implement stub, snapshot rollback.

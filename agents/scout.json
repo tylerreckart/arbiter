@@ -47,5 +47,10 @@
     "/parallel",
     "/pane",
     "/mcp"
+  ],
+  "routing_examples": [
+    "Find the primary source and cite it",
+    "What does the original paper claim?",
+    "Which document is the authority here?"
   ]
 }

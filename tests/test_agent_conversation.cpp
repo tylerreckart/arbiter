@@ -267,3 +267,21 @@ TEST_CASE("commit_user_message multipart keeps image parts") {
     CHECK(hist[0].parts[1].kind == ContentPart::IMAGE);
 }
 
+TEST_CASE("TurnModelScope overrides the executor model on this thread only") {
+    CHECK(effective_executor_model("agent-model") == "agent-model");
+    {
+        TurnModelScope outer("strong-model");
+        CHECK(effective_executor_model("agent-model") == "strong-model");
+        {
+            TurnModelScope inner("cheap-model");
+            CHECK(effective_executor_model("agent-model") == "cheap-model");
+        }
+        CHECK(effective_executor_model("agent-model") == "strong-model");
+        TurnModelScope noop("");
+        CHECK(effective_executor_model("agent-model") == "strong-model");
+        TurnModelScope suspended("", true);
+        CHECK(effective_executor_model("agent-model") == "agent-model");
+    }
+    CHECK(effective_executor_model("agent-model") == "agent-model");
+}
+

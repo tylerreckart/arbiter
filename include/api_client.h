@@ -125,6 +125,22 @@ struct Message {
     std::string thinking;
 };
 
+// One alternative from choices[0].logprobs.content[].top_logprobs.
+struct TopLogprob {
+    std::string token;
+    double logprob = 0;
+};
+
+// One generated token and the alternatives the provider returned for it.
+// has_logprob is false when the body omitted the sampled token's logprob
+// (a zero logprob would otherwise look like probability 1).
+struct TokenLogprobs {
+    std::string token;
+    double logprob = 0;
+    bool has_logprob = false;
+    std::vector<TopLogprob> top_logprobs;
+};
+
 struct ApiRequest {
     std::string model;
     std::string system_prompt;
@@ -132,6 +148,17 @@ struct ApiRequest {
     int max_tokens = 1024;
     double temperature = 0.3;
     bool include_temperature = true;
+    // Opt-in. Left false on generative calls so OpenAI-compatible servers
+    // that reject unknown fields (older Ollama) never see them. top_logprobs
+    // is clamped to 1..20 on the wire; 0 omits the field.
+    bool logprobs = false;
+    int top_logprobs = 0;
+    // OpenRouter only. Empty leaves the provider default. "none" turns
+    // reasoning off (GPT-6 Luna rejects logprobs while reasoning is on).
+    // reasoning_exclude asks OpenRouter to drop reasoning text from the
+    // response. Neither field is sent to Ollama.
+    std::string reasoning_effort;
+    bool reasoning_exclude = false;
 };
 
 struct ApiResponse {
@@ -154,6 +181,15 @@ struct ApiResponse {
     // Outer loops (LoopManager) use this to distinguish "task done" from
     // "send() returned ok but hit kMaxTurns before the gate could fire".
     bool gate_approved = false;
+    // choices[0].logprobs.content, in order. Empty when the provider did
+    // not return logprobs (or returned null).
+    std::vector<TokenLogprobs> logprobs;
+    // Top-level "model" from the response: the model that actually answered,
+    // which can differ from ApiRequest::model when OpenRouter reroutes.
+    std::string served_model;
+    // usage.cost (or usage.total_cost) in USD, when OpenRouter returns it.
+    bool has_cost = false;
+    double cost_usd = 0;
 };
 
 using StreamCallback = std::function<void(const std::string& chunk)>;
@@ -299,6 +335,10 @@ public:
     static std::string build_body_openai   (const Provider& prov,
                                             const ApiRequest& req, bool streaming);
     static std::string build_body_gemini   (const ApiRequest& req);
+
+    // Public so tests can lock logprob / served-model / cost parsing without
+    // a socket. The wire path is still the only production caller.
+    static ApiResponse parse_body_openai(const std::string& body);
 
     // Connection slot — one per active provider.  Public so free-function
     // wire helpers (conn_send / conn_recv in api_client.cpp) can operate on
@@ -455,7 +495,6 @@ private:
     // Format-specific response parsers (kept private — they own the
     // ApiResponse construction and aren't used outside the wire path).
     static ApiResponse parse_body_anthropic(const std::string& body);
-    static ApiResponse parse_body_openai   (const std::string& body);
     static ApiResponse parse_body_gemini   (const std::string& body);
 };
 

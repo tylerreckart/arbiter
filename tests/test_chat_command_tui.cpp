@@ -104,27 +104,34 @@ TEST_CASE("sidebar rename (r) and soft delete (d + y)") {
     s.send("\x17" "b");
     REQUIRE(wait_for_token(s, before_focus, "fold", 10000));
 
+    // Wait until rename mode is painted. A fixed pause lets `r` and the
+    // following deletes land in the line editor on a slow runner.
+    const std::size_t before_rename_mode = s.output().size();
     s.send("r");
-    s.read_for(200);
-    // Clear the pre-filled buffer before typing.
-    for (int i = 0; i < 60; ++i) s.send("\x7f");
-    s.read_for(200);
+    REQUIRE(wait_for_token(s, before_rename_mode, "Rename chat", 10000));
 
+    // Clear the pre-filled buffer before typing.
+    s.send(std::string(60, '\x7f'));
+
+    // OpenTUI emits only the cells that changed. "my-new-title" shares a
+    // column with "seed-title-for-rename", so that byte never appears in
+    // the delta and a search for the whole string fails. "zznewnamex"
+    // differs in every column of the prefilled title.
     const std::size_t before_rename = s.output().size();
-    s.send("my-new-title");
-    // While renaming, the buffer is painted into the row; poll until it
-    // lands (CI runners are slower than a fixed 200ms read_for).
-    CHECK(wait_for_token(s, before_rename, "my-new-title", 10000));
+    s.send("zznewnamex");
+    REQUIRE(wait_for_token(s, before_rename, "zznewnamex", 10000));
     s.send("\r");
-    CHECK(wait_for_token(s, before_rename, "my-new-title", 10000));
+    CHECK(wait_for_token(s, before_rename, "zznewnamex", 10000));
 
     // Delete it (still focused, still pinned to the same — only — entry).
     // Deleting the only conversation creates a fresh one, so the sidebar
-    // must still render cleanly afterward.
+    // must still render cleanly afterward. "y/n" is one hint token, so it
+    // survives the cell diff against the rename hint.
+    const std::size_t before_delete = s.output().size();
     s.send("d");
-    s.read_for(200);
+    REQUIRE(wait_for_token(s, before_delete, "y/n", 10000));
     s.send("y");
-    s.read_for(1500);
+    s.read_for(500);
     CHECK(plain(s).find("Conversations") != std::string::npos);
 
     s.terminate();

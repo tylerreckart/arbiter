@@ -539,9 +539,14 @@ Intent resolve_intent(const IntentInput& in,
 
 std::string format_intent_preamble(const Intent& intent, bool for_specialist) {
     if (intent.source == "none" || intent.source.empty()) return {};
+    const bool live_source = intent.source == "embed" ||
+                             intent.source == "luna" ||
+                             intent.source == "luna_guess" ||
+                             intent.source == "fallback";
     if (intent.kind.empty() || (intent.kind == "unknown" && intent.source != "llm" &&
                                 intent.source != "explicit")) {
-        if (intent.source != "heuristic" && intent.source != "event") return {};
+        if (intent.source != "heuristic" && intent.source != "event" && !live_source)
+            return {};
         if (intent.kind == "unknown" && intent.confidence <= 0.0 &&
             intent.target_agent.empty())
             return {};

@@ -51,5 +51,10 @@
     "/lesson",
     "/advise",
     "/mcp"
+  ],
+  "routing_examples": [
+    "Add a migration for the users table",
+    "The API returns 500 when the token is expired",
+    "The query scans the whole table"
   ]
 }
