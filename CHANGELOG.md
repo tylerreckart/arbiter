@@ -7,6 +7,8 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+## [0.13.13] — 2026-10-14
+
 ### Fixed
 - **TUI logs no longer paint over the input line.** While the interactive UI owns the terminal, stderr is appended to `~/.arbiter/tui.log` instead of the tty. That covers `openrouter_response`, `intent_route`, `intent_shadow`, and the other operational `fprintf` / `cerr` writers that were interleaving with the frame.
 - **Fleet pane sizes to its agents.** One row no longer takes about 40% of the right column. The list scrolls after 12 rows; Session, Agent, Todos, and Tools keep the remaining height.
