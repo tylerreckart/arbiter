@@ -204,26 +204,10 @@ std::unique_ptr<Pane> ReplSession::make_pane() {
         p->editor.set_scroll_handler([this, raw](int direction, int step) {
             // Must serialize against the output pump's drain/draw under
             // layout_mu — replay_load_previous_chunk mutates segments_.
+            // The editor calls this without its own mutex: the pump takes
+            // layout_mu and then that mutex, so holding both deadlocks.
             std::lock_guard<std::recursive_mutex> lk(layout_mu);
-            const int max_off = pane_history_max_scroll(*raw);
-            if (direction < 0) {
-                raw->scroll_offset = std::min(raw->scroll_offset + step, max_off);
-                // Hit the top of currently-loaded scrollback: pull in the
-                // next chunk of older transcript history, if any is behind
-                // the gap marker (see replay_transcript/kReplayTailMessages).
-                if (raw->scroll_offset >= max_off && raw->scroll && raw->scroll->has_gap()) {
-                    ConversationScope scope(raw->conversation_id);
-                    const std::string& agent = raw->current_agent.empty()
-                        ? "index" : raw->current_agent;
-                    const auto history = orch.get_agent_history(agent);
-                    arbiter::replay_load_previous_chunk(*raw, history);
-                }
-            } else {
-                raw->scroll_offset = std::max(0, raw->scroll_offset - step);
-                raw->new_while_scrolled = 0;
-                if (raw->scroll_offset == 0) raw->tui.clear_status();
-            }
-            if (pump_notify) pump_notify();
+            scroll_pane(*raw, direction, step);
         });
         p->editor.set_code_expand_handler([this, raw]() {
             std::lock_guard<std::recursive_mutex> lk(layout_mu);

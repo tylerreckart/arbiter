@@ -164,4 +164,47 @@ inline std::optional<int> decode_kitty_csi_u(std::string_view params) {
     return std::nullopt;
 }
 
+// Kitty functional-key codepoints (Private Use Area). macOS fn+Up / fn+Down
+// are Page Up / Page Down and arrive as these when the keyboard protocol is on.
+inline constexpr int kKittyPageUp = 57354;
+inline constexpr int kKittyPageDown = 57355;
+
+enum class KittyNav { PageUp, PageDown };
+
+// Page Up / Page Down reports, including modified ones (`57354;2:1`).
+// Key-release (event type 3) is nullopt so a press+release pair scrolls once.
+inline std::optional<KittyNav> decode_kitty_nav(std::string_view params) {
+    if (params.empty() || params[0] == '?') return std::nullopt;
+
+    std::string_view code_field;
+    std::string_view after_code;
+    detail::split_semi(params, code_field, after_code);
+
+    const auto colon = code_field.find(':');
+    const std::string_view primary =
+        (colon == std::string_view::npos) ? code_field : code_field.substr(0, colon);
+    int codepoint = 0;
+    if (!detail::parse_uint_field(primary, codepoint)) return std::nullopt;
+
+    int event_type = 1;
+    if (!after_code.empty()) {
+        std::string_view mod_field;
+        std::string_view text_field;
+        detail::split_semi(after_code, mod_field, text_field);
+        const auto mod_colon = mod_field.find(':');
+        if (mod_colon != std::string_view::npos) {
+            std::string_view ev = mod_field.substr(mod_colon + 1);
+            const auto ev_semi = ev.find(';');
+            if (ev_semi != std::string_view::npos) ev = ev.substr(0, ev_semi);
+            if (!ev.empty() && !detail::parse_uint_field(ev, event_type)) {
+                return std::nullopt;
+            }
+        }
+    }
+    if (event_type == 3) return std::nullopt;
+    if (codepoint == kKittyPageUp) return KittyNav::PageUp;
+    if (codepoint == kKittyPageDown) return KittyNav::PageDown;
+    return std::nullopt;
+}
+
 }  // namespace arbiter::opentui

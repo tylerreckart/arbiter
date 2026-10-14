@@ -500,6 +500,26 @@ TEST_CASE("ctrl keys still work when the terminal sends raw kitty CSI-u reports"
     CHECK(s.wait_exited(3000));
 }
 
+TEST_CASE("fn+up page up does not kill the session") {
+    // macOS fn+Up is Page Up. The legacy report is CSI 5~, a modifier
+    // appends ;N, and kitty encodes the functional key as CSI 57354 u.
+    // Scrolling used to run while the editor mutex was held; the frame
+    // pump takes the layout lock and then that mutex, so the session
+    // deadlocked. Repeat the chord, then confirm the editor still takes text.
+    PtySession s = ready_editor();
+    s.read_for(400);
+    for (int i = 0; i < 12; ++i) {
+        s.send("\033[5~");
+        s.send("\033[5;2~");
+        s.send("\033[57354u");
+        s.send("\033[57354;1:3u");  // release — must not scroll twice or abort
+    }
+    const std::size_t before = s.output().size();
+    s.send("still-alive");
+    CHECK(wait_for_plain_after(s, before, "still-alive", 5000));
+    CHECK_FALSE(s.wait_exited(200));
+}
+
 TEST_CASE("ctrl keys decode when the kitty report carries alternate-key/event-type subfields") {
     // Regression: OpenTUI pushes kitty flags 5 (disambiguate + *report
     // alternate keys*), so a real terminal's report isn't the bare

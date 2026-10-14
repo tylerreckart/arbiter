@@ -97,6 +97,20 @@ TEST_CASE("shift-only printable reports use the shifted glyph") {
     CHECK(decode_kitty_csi_u("65;2") == 'A');      // already shifted primary
 }
 
+TEST_CASE("kitty page up and page down decode, releases do not") {
+    using arbiter::opentui::KittyNav;
+    using arbiter::opentui::decode_kitty_nav;
+    CHECK(decode_kitty_nav("57354") == KittyNav::PageUp);
+    CHECK(decode_kitty_nav("57354;1") == KittyNav::PageUp);
+    CHECK(decode_kitty_nav("57354;1:1") == KittyNav::PageUp);
+    CHECK(decode_kitty_nav("57354;2:1") == KittyNav::PageUp);
+    CHECK(decode_kitty_nav("57354;1:3") == std::nullopt);
+    CHECK(decode_kitty_nav("57355") == KittyNav::PageDown);
+    CHECK(decode_kitty_nav("57355;5:2") == KittyNav::PageDown);
+    CHECK(decode_kitty_nav("57352") == std::nullopt);
+    CHECK(decode_kitty_nav("") == std::nullopt);
+}
+
 TEST_CASE("malformed or empty parameter strings decode to nothing") {
     CHECK(decode_kitty_csi_u("") == std::nullopt);
     CHECK(decode_kitty_csi_u(";5") == std::nullopt);

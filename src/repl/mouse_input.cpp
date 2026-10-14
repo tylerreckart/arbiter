@@ -47,6 +47,7 @@
 #include "theme.h"
 #include "config.h"
 
+#include <exception>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -108,11 +109,16 @@ void ReplSession::scroll_pane(Pane& pane, int direction, int step) {
         if (direction < 0) {
             pane.scroll_offset = std::min(pane.scroll_offset + step, max_off);
             if (pane.scroll_offset >= max_off && pane.scroll && pane.scroll->has_gap()) {
-                ConversationScope scope(pane.conversation_id);
-                const std::string& agent = pane.current_agent.empty()
-                    ? "index" : pane.current_agent;
-                const auto history = orch.get_agent_history(agent);
-                arbiter::replay_load_previous_chunk(pane, history);
+                try {
+                    ConversationScope scope(pane.conversation_id);
+                    const std::string& agent = pane.current_agent.empty()
+                        ? "index" : pane.current_agent;
+                    const auto history = orch.get_agent_history(agent);
+                    arbiter::replay_load_previous_chunk(pane, history);
+                } catch (const std::exception&) {
+                    // Unknown agent or a replay failure must not abort the
+                    // session — fn+Up / PgUp lands here at the top of scrollback.
+                }
             }
         } else {
             pane.scroll_offset = std::max(0, pane.scroll_offset - step);
