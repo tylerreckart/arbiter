@@ -13,6 +13,9 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 - **OpenTUI and Zig downloads are SHA-256 pinned.** Configure fails closed when the prebuilt tarball or Zig archive does not match. Override an unpinned version with `-DARBITER_OPENTUI_SHA256` or `-DARBITER_ZIG_SHA256`.
 - **Version bumps and GitHub Releases wait for CI on the same commit.** `version.yml` runs after the CI workflow succeeds on `main`. `release.yml` refuses a tag whose commit has no successful `ci.yml` run.
 
+### Changed
+- **Live intent routing returns before Luna.** With `ARBITER_INTENT_LIVE=luna`, a cached Luna decision is the route. Otherwise the local embedding model chooses the specialist on the request path, and a missing model uses `ARBITER_INTENT_DEFAULT_AGENT`. Luna runs in the background for a low-confidence embed or a missing model (budget `ARBITER_INTENT_LUNA_TIMEOUT_MS`, default 2000 ms, sized to live p50 1.0–1.4 s and p95 1.6–1.9 s). A successful result fills the decision cache and an `intent_decision` calibration row (request hash, embedding choice and probability, Luna choice and probability, latencies, final agent, later advisor verdict). `ARBITER_INTENT_LUNA_REROUTE` (default off) may swap the specialist when Luna has already finished and strongly disagrees, without changing the executor model.
+
 ## [0.13.12] — 2026-10-13
 
 ### Fixed
