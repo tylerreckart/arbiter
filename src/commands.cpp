@@ -1425,58 +1425,184 @@ bool name_is(const std::string& base, const char* name) {
     return (c >= '0' && c <= '9') || c == '.' || c == '-';
 }
 
-bool has_flag(const std::vector<std::string>& argv,
-              std::initializer_list<const char*> flags) {
-    for (size_t i = 1; i < argv.size(); ++i) {
-        const std::string a = ascii_lower_copy(argv[i]);
-        for (const char* flag : flags) {
-            if (a == flag) return true;
-            // Glued short options: -cCMD, -eCODE.
-            if (flag[0] == '-' && flag[1] != '\0' && flag[2] == '\0' &&
-                a.size() > 2 && a[0] == '-' && a[1] == flag[1] && a[2] != '-')
-                return true;
-        }
-    }
-    return false;
-}
-
 bool short_cluster_has(const std::string& arg, char bit) {
     if (arg.size() < 2 || arg[0] != '-' || arg[1] == '-') return false;
     return arg.find(bit) != std::string::npos;
 }
 
-bool argv_is_destructive(const std::vector<std::string>& argv) {
+bool is_shell_basename(const std::string& base) {
+    return name_is(base, "sh") || name_is(base, "bash") || name_is(base, "dash") ||
+           name_is(base, "zsh") || name_is(base, "ksh") || name_is(base, "mksh") ||
+           name_is(base, "ash") || name_is(base, "csh") || name_is(base, "tcsh") ||
+           name_is(base, "fish");
+}
+
+bool is_awk_basename(const std::string& base) {
+    return base == "awk" || base == "gawk" || base == "nawk" || base == "mawk" ||
+           name_is(base, "gawk") || name_is(base, "nawk") || name_is(base, "mawk");
+}
+
+// Versioned names count: python3.12, php8.3, node20, bash-5.2. Matching is
+// on the basename, so /usr/bin/python3.12 is the same as python3.12.
+bool is_interpreter_basename(const std::string& base) {
+    if (is_shell_basename(base) || is_awk_basename(base)) return true;
+    if (name_is(base, "python") || name_is(base, "pypy") ||
+        name_is(base, "perl") || name_is(base, "ruby") ||
+        name_is(base, "node") || base == "nodejs" ||
+        name_is(base, "php") || name_is(base, "lua") || name_is(base, "luajit") ||
+        name_is(base, "deno") || name_is(base, "bun") ||
+        base == "osascript" ||
+        name_is(base, "tclsh") || base == "wish" ||
+        base == "rscript" || name_is(base, "julia") ||
+        base == "elixir" || base == "erl" || base == "escript" ||
+        base == "guile" || base == "racket" || base == "scheme" ||
+        base == "pwsh" || base == "powershell" ||
+        base == "groovy" || name_is(base, "dart"))
+        return true;
+    return false;
+}
+
+// `--version` / `--help` only. `-v` is version for node, ruby, perl, php,
+// deno, and bun; it is verbose (and can read a script from stdin) for
+// shells and python, so those do not get the shortcut.
+bool is_version_query(const std::string& base, const std::vector<std::string>& argv) {
+    if (argv.size() < 2) return false;
+    const bool v_is_version = !is_shell_basename(base) && !is_awk_basename(base) &&
+                              !name_is(base, "python") && !name_is(base, "pypy");
+    for (size_t i = 1; i < argv.size(); ++i) {
+        const std::string a = ascii_lower_copy(argv[i]);
+        if (a == "--version" || a == "--help" || a == "--usage" || a == "-V")
+            continue;
+        if (a == "-v" && v_is_version) continue;
+        return false;
+    }
+    return true;
+}
+
+// Eval / module flags, including glued forms (`-cCMD`, `--eval=code`).
+bool is_eval_payload_flag(const std::string& a) {
+    if (a == "-c" || a == "-e" || a == "-r" || a == "-m") return true;
+    if (a.rfind("--eval", 0) == 0 || a.rfind("--command", 0) == 0 ||
+        a.rfind("--source", 0) == 0 || a.rfind("--module", 0) == 0 ||
+        a.rfind("--execute", 0) == 0)
+        return true;
+    if (a.size() > 2 && a[0] == '-' && a[1] != '-' &&
+        (a[1] == 'c' || a[1] == 'e' || a[1] == 'r') && a[2] != '-')
+        return true;
+    return false;
+}
+
+// True when this interpreter argv runs a file, a program string, a module,
+// or (awk / a non-version shell) a program from stdin. `--version` alone
+// does not. A bare `python3` or `bash` with no arguments does not either.
+bool interpreter_runs_program(const std::vector<std::string>& argv) {
     if (argv.empty()) return true;
     const std::string base = exec_basename(argv[0]);
+    if (!is_interpreter_basename(base)) return false;
+    if (is_version_query(base, argv)) return false;
+
+    // awk with no program argument reads the program from stdin, and any
+    // awk flag other than a version query still runs a program (`-f`,
+    // `'{system()}'`). Shells likewise: `bash -x`, `bash -s`, `sh -c`
+    // all execute a script. Bare argv (no flags) stays a REPL.
+    if (is_awk_basename(base)) return true;
+    if (is_shell_basename(base)) return argv.size() > 1;
+
+    for (size_t i = 1; i < argv.size(); ++i) {
+        const std::string a = ascii_lower_copy(argv[i]);
+        if (a.empty()) continue;
+        if (is_eval_payload_flag(a)) return true;
+        // `-` is a stdin script. A non-option is a path, program, or
+        // subcommand (`deno run`, `bun run`, `python -m pytest`).
+        if (a == "-" || a[0] != '-') return true;
+    }
+    return false;
+}
+
+bool is_env_assignment(const std::string& a) {
+    if (a.empty() || a[0] == '-' || a[0] == '=') return false;
+    return a.find('=') != std::string::npos;
+}
+
+// Peel `env [flags] [VAR=VAL]... command`. False when env itself is the
+// hazard: environment dump, `-S` shell string, or an unrecognised flag.
+bool unwrap_env(const std::vector<std::string>& argv, std::vector<std::string>& out) {
+    size_t i = 1;
+    while (i < argv.size()) {
+        const std::string& raw = argv[i];
+        const std::string a = ascii_lower_copy(raw);
+        if (a == "--") { ++i; break; }
+        if (a == "-s" || a == "--split-string" || a.rfind("--split-string=", 0) == 0)
+            return false;
+        if (a == "-i" || a == "--ignore-environment" || a == "-" ||
+            a == "-0" || a == "--null" ||
+            a == "-v" || a == "--debug" ||
+            a == "--help" || a == "--version") {
+            ++i;
+            continue;
+        }
+        if (a == "-u" || a == "--unset" || a == "-C" || a == "--chdir" ||
+            a == "--argv0" || a == "-P" || a == "--default-signal" ||
+            a == "--ignore-signal" || a == "--block-signal") {
+            if (i + 1 >= argv.size()) return false;
+            i += 2;
+            continue;
+        }
+        if (a.rfind("--unset=", 0) == 0 || a.rfind("--chdir=", 0) == 0 ||
+            a.rfind("--argv0=", 0) == 0 || a.rfind("--default-signal=", 0) == 0 ||
+            a.rfind("--ignore-signal=", 0) == 0 || a.rfind("--block-signal=", 0) == 0) {
+            ++i;
+            continue;
+        }
+        if (a.size() > 2 && a[0] == '-' && a[1] != '-' &&
+            (a[1] == 'u' || a[1] == 'C' || a[1] == 'P')) {
+            ++i;
+            continue;
+        }
+        if (a.size() > 2 && a[0] == '-' && a[1] == 'S') return false;
+        if (!a.empty() && a[0] == '-') return false;
+        if (is_env_assignment(raw)) { ++i; continue; }
+        break;
+    }
+    if (i >= argv.size()) return false;
+    out.clear();
+    for (; i < argv.size(); ++i) out.push_back(argv[i]);
+    return !out.empty() && !out[0].empty();
+}
+
+bool argv_is_destructive(const std::vector<std::string>& argv) {
+    if (argv.empty()) return true;
+
+    // `env python3.12 script.py` and `/usr/bin/env bash /tmp/x.sh` are the
+    // interpreter, not a generic env dump. A plain `env git status` is
+    // classified as git. Bare `env` still prompts (it prints the environment).
+    std::vector<std::string> cur = argv;
+    for (int depth = 0; depth < 4; ++depth) {
+        if (exec_basename(cur[0]) != "env") break;
+        std::vector<std::string> next;
+        if (!unwrap_env(cur, next)) return true;
+        cur = std::move(next);
+    }
+    if (exec_basename(cur[0]) == "env") return true;
+
+    const std::string base = exec_basename(cur[0]);
 
     static const char* kAlways[] = {
         "rm", "rmdir", "unlink", "shred", "truncate", "dd",
         "sudo", "doas", "su", "chmod", "chown", "chgrp",
         "wipefs", "fdisk", "parted", "tee",
-        "env", "xargs", "nice", "nohup", "stdbuf", "ionice", "busybox",
+        "xargs", "nice", "nohup", "stdbuf", "ionice", "busybox",
     };
     for (const char* name : kAlways) {
         if (base == name) return true;
     }
     if (base.rfind("mkfs", 0) == 0) return true;
 
-    const bool shell = base == "sh" || base == "bash" || base == "dash" ||
-                       base == "zsh" || base == "ksh" || base == "ash" ||
-                       base == "csh" || base == "tcsh" || base == "fish";
-    if (shell && has_flag(argv, {"-c", "--command"})) return true;
-
-    const bool interp =
-        name_is(base, "python") || name_is(base, "perl") || name_is(base, "ruby") ||
-        name_is(base, "node") || base == "nodejs" || name_is(base, "php") ||
-        name_is(base, "lua") || base == "deno" || base == "bun" ||
-        base == "osascript" || base == "awk" || base == "gawk" || base == "nawk";
-    if (interp && has_flag(argv, {"-c", "-e", "--eval", "--command", "--source"}))
-        return true;
-    if (name_is(base, "php") && has_flag(argv, {"-r"})) return true;
+    if (interpreter_runs_program(cur)) return true;
 
     if (base == "curl" || base == "wget") {
-        for (size_t i = 1; i < argv.size(); ++i) {
-            const std::string a = ascii_lower_copy(argv[i]);
+        for (size_t i = 1; i < cur.size(); ++i) {
+            const std::string a = ascii_lower_copy(cur[i]);
             if (a == "-o" || a == "-O" || a == "--output" ||
                 a.rfind("--output=", 0) == 0 ||
                 (a.size() > 2 && a[0] == '-' && (a[1] == 'o' || a[1] == 'O') && a[2] != '-'))
@@ -1485,8 +1611,8 @@ bool argv_is_destructive(const std::vector<std::string>& argv) {
     }
 
     if (base == "find") {
-        for (size_t i = 1; i < argv.size(); ++i) {
-            const std::string a = ascii_lower_copy(argv[i]);
+        for (size_t i = 1; i < cur.size(); ++i) {
+            const std::string a = ascii_lower_copy(cur[i]);
             if (a == "-delete" || a == "-exec" || a == "-execdir" ||
                 a == "-ok" || a == "-okdir" || a == "-fprint" ||
                 a == "-fls" || a == "-fprintf")
@@ -1496,8 +1622,8 @@ bool argv_is_destructive(const std::vector<std::string>& argv) {
 
     if (base == "git") {
         size_t i = 1;
-        while (i < argv.size()) {
-            const std::string a = ascii_lower_copy(argv[i]);
+        while (i < cur.size()) {
+            const std::string a = ascii_lower_copy(cur[i]);
             if (a == "-c" || a == "-C" || a == "--git-dir" || a == "--work-tree") {
                 i += 2;
                 continue;
@@ -1510,10 +1636,10 @@ bool argv_is_destructive(const std::vector<std::string>& argv) {
             if (!a.empty() && a[0] == '-') { ++i; continue; }
             break;
         }
-        if (i >= argv.size()) return false;
-        const std::string sub = ascii_lower_copy(argv[i]);
-        for (size_t j = i + 1; j < argv.size(); ++j) {
-            const std::string a = ascii_lower_copy(argv[j]);
+        if (i >= cur.size()) return false;
+        const std::string sub = ascii_lower_copy(cur[i]);
+        for (size_t j = i + 1; j < cur.size(); ++j) {
+            const std::string a = ascii_lower_copy(cur[j]);
             if (sub == "reset" && a == "--hard") return true;
             if (sub == "clean" &&
                 (a == "--force" || a.rfind("--force", 0) == 0 || short_cluster_has(a, 'f')))
@@ -2073,9 +2199,10 @@ std::string cmd_mem_shared_clear(const std::string& memory_dir) {
 // execute_agent_commands
 // ---------------------------------------------------------------------------
 
-// Shell syntax, destructive argv, and inline interpreter eval.  Quote-aware
-// so `echo 'a|b'` stays a single argv and is not a pipe.  The dispatcher
-// confirms on true; cmd_exec refuses to spawn until confirmed=true.
+// Shell syntax, destructive argv, and interpreters running a file or
+// program.  Quote-aware so `echo 'a|b'` stays a single argv and is not a
+// pipe.  The dispatcher confirms on true; cmd_exec refuses to spawn until
+// confirmed=true.
 bool is_destructive_exec(const std::string& cmd) {
     if (cmd.empty()) return false;
     std::vector<std::string> argv;
@@ -3103,8 +3230,8 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
             } else if (confirm && (!exec_invoker || is_destructive_exec(cmd.args))) {
                 // No invoker: every host command confirms.  An invoker is
                 // either the Docker sandbox or --allow-host-exec; only
-                // destructive commands (shell syntax, rm, interpreter
-                // eval, …) confirm.  The API callback denies those.  The
+                // destructive commands (shell syntax, rm, an interpreter
+                // script, …) confirm.  The API callback denies those.  The
                 // TUI callback prompts, and the host invoker then runs
                 // them with confirmed=true.
                 ConfirmRequest req;

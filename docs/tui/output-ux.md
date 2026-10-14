@@ -72,8 +72,9 @@ thinking row is in view, or left-click the block in the scroll region.
 ## Permission cards
 
 Host `/exec` (when enabled and not Docker-sandboxed) runs plain argv
-directly. Shell syntax and other destructive commands prompt with a
-multi-line permission card labelled
+(`git status`, `npm test`, `make`) directly. Shell syntax, interpreter
+scripts, and other destructive commands prompt with a multi-line
+permission card labelled
 `HOST SHELL (unsandboxed) — destructive command` before running.
 Sandboxed `/exec` (opt-in via `ARBITER_SANDBOX_IMAGE`) only confirms
 destructive patterns. Plain `/write` in the TUI confirms, then writes

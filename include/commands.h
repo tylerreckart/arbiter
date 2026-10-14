@@ -55,9 +55,10 @@ std::string base64_encode(const std::string& bytes);
 
 // Run a host command. Plain argv (no shell syntax) is posix_spawnp'd.
 // Pipes, redirects, substitution, globs, and other shell syntax run via
-// /bin/sh only when confirmed=true. Destructive argv (rm, sudo, inline
-// interpreter eval, …) is refused unless confirmed. Output is stdout+stderr,
-// capped at 32 KB. A non-zero exit is appended as "[exit N]".
+// /bin/sh only when confirmed=true. Destructive argv (rm, sudo, an
+// interpreter running a file or program, …) is refused unless confirmed.
+// Output is stdout+stderr, capped at 32 KB. A non-zero exit is appended
+// as "[exit N]".
 std::string cmd_exec(const std::string& command, bool confirmed = false);
 
 // Sandbox-backed /exec invoker. When null, /exec falls back to cmd_exec.
@@ -431,9 +432,11 @@ using SchedulerInvoker = std::function<std::string(const std::string& kind,
 
 // True when `cmd` must be confirmed before it runs: shell syntax (pipes,
 // redirects, `$()`, globs, …), destructive argv (rm, sudo, mkfs, git
-// force-push, find -delete, tee, …), or an interpreter eval flag
-// (`bash -c`, `python -c`, `perl -e`, `| sh`). Quote-aware — a quoted
-// metacharacter is data, not a shell feature.
+// force-push, find -delete, tee, …), or an interpreter invoked on a file
+// or program (`bash script.sh`, `python3.12 script.py`, `node script.js`,
+// `awk '{...}'`, `deno run file.ts`, including via `env` or an absolute
+// path). `--version` alone does not. Quote-aware — a quoted metacharacter
+// is data, not a shell feature. `npm` and `make` are not interpreters.
 bool is_destructive_exec(const std::string& cmd);
 
 // Optional per-thread cancel poll for execute_agent_commands.  Orchestrator

@@ -64,10 +64,11 @@ that simply demonstrate them are not vulnerabilities:
 
 - **`/exec` is unsandboxed in the terminal client by default** — plain
   argv runs directly with the user's permissions (`posix_spawn`, no
-  shell). Pipes, redirects, substitution, and inline interpreter eval
-  (`bash -c`, `python -c`, and similar) require a
-  `HOST SHELL (unsandboxed)` confirm card, and are refused when the
-  caller cannot approve them. Set `ARBITER_SANDBOX_IMAGE` to opt into
+  shell). Pipes, redirects, substitution, and any interpreter running a
+  file or program (`bash script.sh`, `python3.12 script.py`, `node
+  script.js`, `awk`, `deno run`, including via `env` or an absolute
+  path) require a `HOST SHELL (unsandboxed)` confirm card, and are
+  refused when the caller cannot approve them. Set `ARBITER_SANDBOX_IMAGE` to opt into
   the same Docker sandbox as `--api`. The HTTP API (`arbiter --api`)
   disables `/exec` by default (`ApiServerOptions::exec_disabled = true`);
   `--allow-host-exec` re-enables the host path above. A disabled
