@@ -35,7 +35,7 @@ Pin a specific binary release (the script still comes from the repository;
 `ARBITER_VERSION` selects the tarball):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tylerreckart/arbiter/main/install.sh | ARBITER_VERSION=v0.13.13 sh
+curl -fsSL https://raw.githubusercontent.com/tylerreckart/arbiter/main/install.sh | ARBITER_VERSION=v0.13.14 sh
 ```
 
 ### From source
