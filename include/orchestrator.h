@@ -121,6 +121,10 @@ public:
     // Without it, /exec falls back to the host path gated by exec_disabled.
     void set_exec_invoker(ExecInvoker cb) { exec_invoker_cb_ = std::move(cb); }
 
+    // The exec invoker runs on the host (cmd_exec) rather than in the
+    // Docker sandbox.  Confirm cards say HOST SHELL, not sandboxed.
+    void set_host_exec_surface(bool v) { host_exec_surface_ = v; }
+
     // ── Fleet-streaming callbacks ──────────────────────────────────────────
     //
     // An agent "turn" is one invocation of Agent::chat/stream; the master
@@ -537,6 +541,7 @@ private:
     ArtifactLister     artifact_lister_cb_;
     ExecInvoker        exec_invoker_cb_;
     bool               exec_disabled_ = false;
+    bool               host_exec_surface_ = false;
 
     StreamStartCallback stream_start_cb_;
     AgentStreamCallback agent_stream_cb_;
@@ -571,6 +576,10 @@ private:
     IntentIngress apply_intent_ingress(const std::string& agent_id,
                                        const std::string& classify_text,
                                        bool fresh_ingress = true);
+
+    // Optional Luna disagreement swap. Default off. Leaves the executor
+    // model and the stream's agent id on the synchronous choice.
+    Agent* luna_reroute_target(Agent* current, const std::string& current_id);
 
     // Spoken/voice agents and voice-channel ingress must not be intent-rerouted
     // onto compressed specialists mid-conversation.

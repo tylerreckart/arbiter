@@ -3,7 +3,16 @@ name: Version bump
 # main is ruleset-protected ("Changes must be made through a pull
 # request"), so this workflow never pushes commits to main.
 #
-# Feature merge (or workflow_dispatch):
+# It does not run on the push itself.  CI (`ci.yml`, workflow name
+# "CI") has to finish green on that push to main first.  A red main
+# cannot open a release PR or cut a tag.  workflow_run's github.sha
+# is the default-branch SHA at event time, so the job re-fetches
+# origin/main and requires a successful ci.yml run on that exact
+# commit before it bumps or tags.  Pull-request CI does not match
+# (event is pull_request, head branch is not main).
+#
+# Feature merge (or workflow_dispatch, which also requires CI on
+# origin/main):
 #   Open / update a `chore/release-vX.Y.Z` PR with the CMakeLists,
 #   changelog, and docs install-pin edits.  Enable auto-merge when the
 #   repo allows it.  Do not tag yet — a squash merge rewrites the SHA.
@@ -11,23 +20,31 @@ name: Version bump
 # Release PR merged (`chore(release): vX.Y.Z` on main), or a feature
 # PR that already bumped CMakeLists ahead of the latest tag:
 #   Tag HEAD and dispatch release.yml.  Tag pushes are not subject to
-#   the pull-request ruleset.
+#   the pull-request ruleset.  release.yml checks CI again on the
+#   tagged commit.
 #
 # Auto cuts a patch (0.12.2 → 0.12.3).  Minor / major:
 #   - Actions → Version bump → minor / major / explicit X.Y.Z
 #   - Or bump `project(arbiter VERSION …)` in the PR; on merge this
 #     workflow tags that version instead of auto-patching
-#   - `[skip version]` skips entirely
+#   - `[skip version]` skips entirely (push-driven runs only)
 #   - `git tag vX.Y.Z && git push origin vX.Y.Z` still fires
-#     release.yml on its own
+#     release.yml on its own; that workflow refuses a commit CI
+#     never passed
 #
 # Creating the release PR requires Settings → Actions → General →
 # "Allow GitHub Actions to create and approve pull requests".
+#
+# Branch protection is separate and cannot be set from this file.
+# Mark the CI job names as required status checks so a red PR cannot
+# merge: version-bump-script, macos-arm64, linux-x86_64,
+# linux-x86_64-asan, linux-x86_64-tsan.
 
 on:
-  push:
-    branches:
-      - main
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
     inputs:
       bump:
@@ -46,7 +63,7 @@ on:
 permissions:
   contents: write        # push release branch + tags
   pull-requests: write   # open / auto-merge the release PR
-  actions: write         # dispatch release.yml
+  actions: write         # list CI runs (read) and dispatch release.yml
 
 concurrency:
   group: version-main
@@ -60,8 +77,10 @@ jobs:
     if: >
       github.event_name == 'workflow_dispatch' ||
       (
-        github.event_name == 'push' &&
-        !contains(github.event.head_commit.message, '[skip version]')
+        github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_branch == 'main'
       )
     outputs:
       skipped: ${{ steps.cut.outputs.skipped }}
@@ -78,7 +97,32 @@ jobs:
           git fetch origin main --tags --force
           git checkout -B main origin/main
 
+      # workflow_dispatch ignores the commit message so a human can cut
+      # a release from a commit that was itself marked [skip version].
+      - name: Honor [skip version]
+        id: gate
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_run" ] &&
+             git log -1 --format=%B | grep -F '[skip version]' >/dev/null; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "origin/main says [skip version]; not bumping"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Require CI success on this commit
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euxo pipefail
+          chmod +x .github/scripts/require_ci_success.sh
+          .github/scripts/require_ci_success.sh "$(git rev-parse HEAD)"
+
       - name: Self-test bump script
+        if: steps.gate.outputs.skip != 'true'
         run: |
           set -euxo pipefail
           chmod +x .github/scripts/bump_version.sh \
@@ -87,11 +131,11 @@ jobs:
 
       - name: Cut version
         id: cut
+        if: steps.gate.outputs.skip != 'true'
         env:
           EVENT_NAME: ${{ github.event_name }}
           INPUT_BUMP: ${{ github.event.inputs.bump }}
           INPUT_VERSION: ${{ github.event.inputs.version }}
-          TRIGGER_SHA: ${{ github.sha }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
         run: |
@@ -100,6 +144,9 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           echo "tagged=false" >> "$GITHUB_OUTPUT"
+          # The commit we will tag or branch from, not the workflow_run
+          # event SHA (github.sha on workflow_run is not that commit).
+          TRIGGER_SHA="$(git rev-parse HEAD)"
 
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             MODE=manual

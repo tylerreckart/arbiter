@@ -71,18 +71,20 @@ thinking row is in view, or left-click the block in the scroll region.
 
 ## Permission cards
 
-Host `/exec` (when enabled and not Docker-sandboxed) always prompts with a
-multi-line permission card labelled `HOST SHELL (unsandboxed)` before running
-the command. Sandboxed `/exec` (opt-in via `ARBITER_SANDBOX_IMAGE`) only
-confirms destructive patterns. Plain `/write` in the TUI confirms, then writes
+Host `/exec` (when enabled and not Docker-sandboxed) runs plain argv
+directly. Shell syntax and other destructive commands prompt with a
+multi-line permission card labelled
+`HOST SHELL (unsandboxed) — destructive command` before running.
+Sandboxed `/exec` (opt-in via `ARBITER_SANDBOX_IMAGE`) only confirms
+destructive patterns. Plain `/write` in the TUI confirms, then writes
 under the **active conversation's workspace directory** (verified). The API
 server’s capture-only `/write` interceptor is cleared for the interactive TUI
 and `--send` CLI so host sessions persist files (`--send` still uses process
 cwd; the TUI binds each conversation's stored `cwd`).
 
 ```
-permission exec  git status
-  HOST SHELL (unsandboxed)
+permission exec  rm -rf build
+  HOST SHELL (unsandboxed) — destructive command
   (+2 more waiting)
   › [y] Allow         —  run this once
     [n] Deny          —  return decline to the agent

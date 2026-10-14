@@ -7,9 +7,18 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+
 ### Fixed
 - **TUI logs no longer paint over the input line.** While the interactive UI owns the terminal, stderr is appended to `~/.arbiter/tui.log` instead of the tty. That covers `openrouter_response`, `intent_route`, `intent_shadow`, and the other operational `fprintf` / `cerr` writers that were interleaving with the frame.
-- **Fleet pane sizes to its agents.** One row no longer takes about 40% of the right column. The list scrolls after 12 rows; Session, Agent, Todos, and Tools keep the remaining height.
+
+### Security
+- **Host `/exec` no longer runs through a shell by default.** Commands are split into argv and spawned with `posix_spawn`. Pipes, redirects, command substitution, background jobs, and inline eval (`bash -c`, `python -c`, `perl -e`, `node -e`, `php -r`, and similar) are destructive: they run under `/bin/sh -c` only after confirmation, and the HTTP API still denies them because its confirm callback cannot approve. `--no-exec` still disables exec. `--allow-host-exec` still runs ordinary argv (`git status`, `ls`, `python3 script.py`) without a prompt. A TUI confirmation now actually runs the command; previously the host invoker asked `cmd_exec` again with confirmation off, so Allow still returned `ERR:`. Non-zero exits are reported as the process exit code (`[exit 1]`), not the raw wait status. Quoted metacharacters (`echo 'a|b'`) are data. `chmod`, `chown`, `tee`, `env`, and `xargs` always require confirmation. A script path (`bash script.sh`) is still argv.
+- **Presence notes cannot inject slash commands (#302).** Watcher names and CONTEXT text are neutralized before the `[PRESENCE: …]` / `[END PRESENCE]` envelope, so untrusted text cannot close the block or plant a column-0 `/exec` or `/write` the working agent would parse.
+- **OpenTUI and Zig downloads are SHA-256 pinned.** Configure fails closed when the prebuilt tarball or Zig archive does not match. Override an unpinned version with `-DARBITER_OPENTUI_SHA256` or `-DARBITER_ZIG_SHA256`.
+- **Version bumps and GitHub Releases wait for CI on the same commit.** `version.yml` runs after the CI workflow succeeds on `main`. `release.yml` refuses a tag whose commit has no successful `ci.yml` run.
+
+### Changed
+- **Live intent routing returns before Luna.** With `ARBITER_INTENT_LIVE=luna`, a cached Luna decision is the route. Otherwise the local embedding model chooses the specialist on the request path, and a missing model uses `ARBITER_INTENT_DEFAULT_AGENT`. Luna runs in the background for a low-confidence embed or a missing model (budget `ARBITER_INTENT_LUNA_TIMEOUT_MS`, default 2000 ms, sized to live p50 1.0–1.4 s and p95 1.6–1.9 s). A successful result fills the decision cache and an `intent_decision` calibration row (request hash, embedding choice and probability, Luna choice and probability, latencies, final agent, later advisor verdict). `ARBITER_INTENT_LUNA_REROUTE` (default off) may swap the specialist when Luna has already finished and strongly disagrees, without changing the executor model.
 
 ## [0.13.12] — 2026-10-13
 

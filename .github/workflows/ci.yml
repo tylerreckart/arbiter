@@ -41,8 +41,11 @@ jobs:
         run: |
           set -euxo pipefail
           chmod +x .github/scripts/bump_version.sh \
-                   .github/scripts/test_bump_version.sh
+                   .github/scripts/test_bump_version.sh \
+                   .github/scripts/require_ci_success.sh \
+                   .github/scripts/test_require_ci_success.sh
           .github/scripts/test_bump_version.sh
+          .github/scripts/test_require_ci_success.sh
 
   build_and_test:
     name: ${{ matrix.os_slug }}-${{ matrix.arch_slug }}

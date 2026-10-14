@@ -2,8 +2,9 @@
 //
 // Cutoffs come from IntentRouteConfig (see intent_route_defaults). This
 // file does not introduce a second confidence or timeout constant.
-// Embedding runs first when the caller passes a decide function. The
-// heuristic runs only when that function is absent or its result is not ok.
+// The request path returns the cached Luna decision, otherwise the
+// embedding choice, otherwise the default agent. Luna runs on a worker
+// the caller does not join.
 
 #include "intent_route.h"
 #include "embed_route.h"
@@ -13,9 +14,9 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
-#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
+#include <openssl/sha.h>
 #include <sstream>
 #include <utility>
 
@@ -43,6 +44,26 @@ std::string trim_copy(std::string s) {
 bool flag_on(const std::string& s) {
     return s == "luna" || s == "on" || s == "true" || s == "1";
 }
+
+bool flag_yes(const std::string& s) {
+    return s == "on" || s == "true" || s == "1" || s == "yes";
+}
+
+std::string sha256_hex(const std::string& input) {
+    unsigned char digest[SHA256_DIGEST_LENGTH];
+    SHA256(reinterpret_cast<const unsigned char*>(input.data()),
+           input.size(), digest);
+    static const char* kHex = "0123456789abcdef";
+    std::string out(SHA256_DIGEST_LENGTH * 2, '0');
+    for (unsigned i = 0; i < SHA256_DIGEST_LENGTH; ++i) {
+        out[i * 2] = kHex[digest[i] >> 4];
+        out[i * 2 + 1] = kHex[digest[i] & 0x0f];
+    }
+    return out;
+}
+
+constexpr std::size_t kDecisionLogCap = 128;
+constexpr std::size_t kWatchCap = 64;
 
 double env_temperature(const char* name, double fallback) {
     const char* v = std::getenv(name);
@@ -300,6 +321,32 @@ void apply_model_tier(IntentRouteTimings& timings, const IntentRouteConfig& cfg)
     timings.model_tier = score >= cfg.strong_difficulty ? "strong" : "cheap";
 }
 
+void log_decision(const IntentDecisionRecord& rec) {
+    Logger::global().info("intent_decision", {
+        {"request_hash", rec.request_hash},
+        {"embed_choice", rec.embed_choice},
+        {"embed_prob", rec.embed_prob_known ? fmt_num(rec.embed_prob, 3) : std::string()},
+        {"luna_choice", rec.luna_choice},
+        {"luna_prob", rec.luna_prob_known ? fmt_num(rec.luna_prob, 3) : std::string()},
+        {"route_ms", fmt_num(rec.route_ms, 1)},
+        {"luna_ms", fmt_num(rec.luna_ms, 1)},
+        {"final_agent", rec.final_agent},
+        {"advisor_verdict", rec.advisor_verdict},
+        {"tier", rec.tier},
+    });
+}
+
+bool distribution_has_known(const DecisionResult& result) {
+    for (const auto& entry : result.distribution) {
+        if (entry.second && std::isfinite(*entry.second)) return true;
+    }
+    return false;
+}
+
+std::string agent_or_index(const std::string& id) {
+    return id.empty() ? "index" : id;
+}
+
 void log_route(const IntentRouteOutcome& out) {
     Logger::global().info("intent_route", {
         {"tier", out.timings.tier},
@@ -320,9 +367,12 @@ void log_route(const IntentRouteOutcome& out) {
 
 IntentRouteOutcome finish(IntentRouteOutcome out,
                           std::chrono::steady_clock::time_point started,
-                          const IntentRouteConfig& cfg) {
+                          const IntentRouteConfig& cfg,
+                          IntentRouteCache* log_cache) {
     out.timings.total_ms = elapsed_ms(started);
     apply_model_tier(out.timings, cfg);
+    if (log_cache && !out.request_hash.empty())
+        log_cache->set_route_ms(out.request_hash, out.timings.total_ms);
     log_route(out);
     return out;
 }
@@ -367,16 +417,13 @@ void fill_from_marginal(Intent& intent, const Intent& hint, const Marginal& m,
     }
 }
 
-struct CallState {
-    std::mutex mu;
-    std::condition_variable cv;
-    bool done = false;
-    DecisionResult result;
+struct BgCall {
     std::shared_ptr<std::atomic<bool>> cancel =
         std::make_shared<std::atomic<bool>>(false);
     std::shared_ptr<std::atomic<bool>> finished =
         std::make_shared<std::atomic<bool>>(false);
     std::string key;
+    std::string hash;
     IntentRouteCache* cache = nullptr;
     int capacity = 0;
     bool allow_store = false;
@@ -390,7 +437,8 @@ IntentRouteConfig intent_route_defaults() {
     cfg.luna_min_confidence = 0.55;
     cfg.strong_difficulty = 0.5;
     cfg.default_difficulty = 0.5;
-    cfg.timeout_ms = 400;
+    cfg.timeout_ms = 2000;
+    cfg.luna_reroute = false;
     cfg.cache_ttl_ms = 60000;
     cfg.cache_entries = 64;
     cfg.normalize_max_chars = 512;
@@ -414,6 +462,10 @@ IntentRouteConfig intent_route_config_from_env() {
     cfg.default_difficulty =
         env_unit("ARBITER_INTENT_DEFAULT_DIFFICULTY", cfg.default_difficulty);
     cfg.timeout_ms = env_int("ARBITER_INTENT_LUNA_TIMEOUT_MS", cfg.timeout_ms, 1, 600000);
+    {
+        const char* v = std::getenv("ARBITER_INTENT_LUNA_REROUTE");
+        if (v && *v) cfg.luna_reroute = flag_yes(lower_copy(v));
+    }
     cfg.cache_ttl_ms = env_int("ARBITER_INTENT_CACHE_TTL_MS", cfg.cache_ttl_ms, 0, 86400000);
     cfg.cache_entries = env_int("ARBITER_INTENT_CACHE_ENTRIES", cfg.cache_entries, 1, 10000);
     cfg.normalize_max_chars =
@@ -473,9 +525,10 @@ std::optional<DecisionResult> IntentRouteCache::lookup(const std::string& key, i
     return it->second.first.result;
 }
 
-void IntentRouteCache::store(const std::string& key, const DecisionResult& result, int capacity) {
+void IntentRouteCache::store_unlocked(const std::string& key,
+                                       const DecisionResult& result,
+                                       int capacity) {
     if (key.empty() || capacity < 1 || !result.ok || result.choice.empty()) return;
-    std::lock_guard<std::mutex> lock(mu_);
     auto it = map_.find(key);
     if (it != map_.end()) {
         it->second.first.result = result;
@@ -490,6 +543,11 @@ void IntentRouteCache::store(const std::string& key, const DecisionResult& resul
         map_.erase(lru_.back());
         lru_.pop_back();
     }
+}
+
+void IntentRouteCache::store(const std::string& key, const DecisionResult& result, int capacity) {
+    std::lock_guard<std::mutex> lock(mu_);
+    store_unlocked(key, result, capacity);
 }
 
 void IntentRouteCache::adopt_worker(std::thread worker,
@@ -517,6 +575,148 @@ void IntentRouteCache::reap() {
     for (auto& t : done) {
         if (t.joinable()) t.join();
     }
+}
+
+void IntentRouteCache::record_decision(IntentDecisionRecord rec) {
+    if (rec.request_hash.empty()) return;
+    std::lock_guard<std::mutex> lock(mu_);
+    decisions_.push_front(std::move(rec));
+    while (decisions_.size() > kDecisionLogCap) decisions_.pop_back();
+}
+
+void IntentRouteCache::note_advisor(const std::string& request_hash,
+                                    const std::string& verdict) {
+    IntentDecisionRecord copy;
+    bool found = false;
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        for (auto& rec : decisions_) {
+            if (rec.request_hash != request_hash) continue;
+            rec.advisor_verdict = verdict;
+            copy = rec;
+            found = true;
+            break;
+        }
+    }
+    if (found) log_decision(copy);
+}
+
+void IntentRouteCache::set_route_ms(const std::string& request_hash, double route_ms) {
+    IntentDecisionRecord copy;
+    bool found = false;
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        for (auto& rec : decisions_) {
+            if (rec.request_hash != request_hash) continue;
+            rec.route_ms = route_ms;
+            copy = rec;
+            found = true;
+            break;
+        }
+    }
+    if (found) log_decision(copy);
+}
+
+std::optional<IntentDecisionRecord> IntentRouteCache::find_decision(
+    const std::string& request_hash) {
+    std::lock_guard<std::mutex> lock(mu_);
+    for (const auto& rec : decisions_) {
+        if (rec.request_hash == request_hash) return rec;
+    }
+    return std::nullopt;
+}
+
+std::vector<IntentDecisionRecord> IntentRouteCache::decisions() {
+    std::lock_guard<std::mutex> lock(mu_);
+    return std::vector<IntentDecisionRecord>(decisions_.begin(), decisions_.end());
+}
+
+void IntentRouteCache::track_luna(const std::string& request_hash,
+                                  const std::string& sync_agent,
+                                  const std::shared_ptr<std::atomic<bool>>& finished) {
+    if (request_hash.empty()) return;
+    std::lock_guard<std::mutex> lock(mu_);
+    LunaWatch watch;
+    watch.sync_agent = sync_agent;
+    watch.finished = finished;
+    watches_[request_hash] = std::move(watch);
+    watch_order_.push_back(request_hash);
+    while (watch_order_.size() > kWatchCap) {
+        const std::string old = watch_order_.front();
+        auto it = watches_.find(old);
+        if (it != watches_.end() && !it->second.settled) break;
+        if (it != watches_.end()) watches_.erase(it);
+        watch_order_.pop_front();
+    }
+}
+
+void IntentRouteCache::settle_luna(const std::string& request_hash,
+                                   const std::string& key,
+                                   const DecisionResult* store,
+                                   int capacity,
+                                   const std::string& luna_choice,
+                                   double luna_prob,
+                                   bool luna_prob_known,
+                                   double luna_ms,
+                                   double confidence) {
+    IntentDecisionRecord copy;
+    bool found = false;
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        if (store) store_unlocked(key, *store, capacity);
+        auto it = watches_.find(request_hash);
+        if (it != watches_.end()) {
+            it->second.settled = true;
+            it->second.ok = store != nullptr && !luna_choice.empty();
+            it->second.agent = luna_choice;
+            it->second.probability = luna_prob;
+            it->second.probability_known = luna_prob_known;
+            it->second.confidence = confidence;
+        }
+        for (auto& rec : decisions_) {
+            if (rec.request_hash != request_hash) continue;
+            rec.luna_choice = luna_choice;
+            rec.luna_prob = luna_prob;
+            rec.luna_prob_known = luna_prob_known;
+            rec.luna_ms = luna_ms;
+            copy = rec;
+            found = true;
+            break;
+        }
+    }
+    if (found) log_decision(copy);
+}
+
+LunaReroute IntentRouteCache::poll_reroute(const std::string& request_hash,
+                                           const IntentRouteConfig& cfg) {
+    LunaReroute out;
+    if (!cfg.luna_reroute || request_hash.empty()) return out;
+    IntentDecisionRecord copy;
+    bool applied = false;
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        auto it = watches_.find(request_hash);
+        if (it == watches_.end() || !it->second.settled || it->second.consumed)
+            return out;
+        LunaWatch& watch = it->second;
+        if (!watch.ok || watch.agent.empty() || watch.agent == watch.sync_agent ||
+            watch.confidence < cfg.luna_min_confidence)
+            return out;
+        watch.consumed = true;
+        out.apply = true;
+        out.agent = watch.agent;
+        out.confidence = watch.confidence;
+        out.source = "luna";
+        for (auto& rec : decisions_) {
+            if (rec.request_hash != request_hash) continue;
+            rec.final_agent = watch.agent;
+            copy = rec;
+            applied = true;
+            break;
+        }
+    }
+    if (applied) log_decision(copy);
+    return out;
 }
 
 bool intent_route_should_apply(const IntentConfig& cfg,
@@ -556,6 +756,7 @@ IntentRouteOutcome route_intent_live(const IntentInput& in,
                                      const LunaDecideFn& luna,
                                      const ContextLoadFn& context_load,
                                      const EmbedDecideFn& embed) {
+    (void)intent_cfg;
     const auto started = std::chrono::steady_clock::now();
     cache.reap();
 
@@ -568,16 +769,49 @@ IntentRouteOutcome route_intent_live(const IntentInput& in,
         out.intent.target_agent = in.requested_agent;
         if (out.intent.kind == "unknown") out.intent.confidence = 0;
         out.timings.tier = "explicit";
-        return finish(std::move(out), started, route_cfg);
+        const std::string key = cache_key_for(in, route_cfg);
+        out.request_hash = sha256_hex(key);
+        IntentDecisionRecord rec;
+        rec.request_hash = out.request_hash;
+        rec.final_agent = in.requested_agent;
+        rec.tier = "explicit";
+        cache.record_decision(rec);
+        return finish(std::move(out), started, route_cfg, &cache);
     }
 
-    // Embedding first, when the caller supplied a loaded model. A confident
-    // result does not consult the heuristic or Luna. A scored-but-unsure
-    // result skips the heuristic (it abstains more often than it helps) and
-    // falls through to Luna. A failed embed leaves the heuristic in place.
+    const std::string key = cache_key_for(in, route_cfg);
+    const std::string hash = sha256_hex(key);
+
+    if (route_cfg.cache_ttl_ms > 0) {
+        if (auto hit = cache.lookup(key, route_cfg.cache_ttl_ms)) {
+            Marginal m = marginalize(*hit);
+            if (!m.agent.empty() && hit->ok) {
+                IntentRouteOutcome out;
+                Intent hint = heuristic_classify(in);
+                fill_from_marginal(out.intent, hint, m, route_cfg, out.timings);
+                out.timings.tier = "cache";
+                out.timings.cache_hit = true;
+                out.timings.luna_ms = 0;
+                out.request_hash = hash;
+                IntentDecisionRecord rec;
+                rec.request_hash = hash;
+                rec.luna_choice = m.agent;
+                rec.luna_prob = m.probability;
+                rec.luna_prob_known = distribution_has_known(*hit);
+                rec.final_agent = agent_or_index(m.agent);
+                rec.tier = "cache";
+                cache.record_decision(std::move(rec));
+                return finish(std::move(out), started, route_cfg, &cache);
+            }
+        }
+    }
+
     double embed_ms = 0;
     bool embed_scored = false;
-    std::string embed_guess;
+    std::string embed_choice;
+    double embed_prob = 0;
+    bool embed_prob_known = false;
+    double embed_confidence = 0;
     if (embed) {
         DecisionRequest request;
         request.state = in.text;
@@ -601,180 +835,182 @@ IntentRouteOutcome route_intent_live(const IntentInput& in,
             }
             if (scored.ok && known) {
                 embed_scored = true;
-                embed_guess = scored.choice;
-                if (scored.confidence >= route_cfg.embed_min_confidence) {
-                    IntentRouteOutcome out;
-                    Intent hint = heuristic_classify(in);
-                    if (in.source_hint == "event") hint.source = "event";
-                    out.intent = hint;
-                    out.intent.target_agent = scored.choice;
-                    out.intent.confidence = scored.confidence;
-                    out.intent.source = "embed";
-                    out.intent.llm_used = false;
-                    out.intent.malformed = false;
-                    if (hint.target_agent != scored.choice) {
-                        out.intent.kind = "unknown";
-                        out.intent.brief = "Route to " + scored.choice;
-                    }
-                    if (out.intent.brief.empty())
-                        out.intent.brief = "Route to " + scored.choice;
-                    out.timings.tier = "embed";
-                    out.timings.embed_ms = embed_ms;
-                    out.timings.choose_model = false;
-                    return finish(std::move(out), started, route_cfg);
-                }
-            }
-        }
-    }
-
-    const std::string key = cache_key_for(in, route_cfg);
-    if (route_cfg.cache_ttl_ms > 0) {
-        if (auto hit = cache.lookup(key, route_cfg.cache_ttl_ms)) {
-            Marginal m = marginalize(*hit);
-            IntentRouteOutcome out;
-            Intent hint = heuristic_classify(in);
-            if (!m.agent.empty() && hit->ok) {
-                fill_from_marginal(out.intent, hint, m, route_cfg, out.timings);
-                out.timings.tier = "cache";
-                out.timings.cache_hit = true;
-                out.timings.luna_ms = 0;
-                out.timings.embed_ms = embed_ms;
-                return finish(std::move(out), started, route_cfg);
+                embed_choice = scored.choice;
+                embed_prob = scored.probability;
+                embed_prob_known = true;
+                embed_confidence = scored.confidence;
             }
         }
     }
 
     Intent hint = heuristic_classify(in);
     if (in.source_hint == "event") hint.source = "event";
-    const bool heuristic_confident =
-        !embed_scored &&
-        !hint.target_agent.empty() &&
-        hint.confidence >= intent_cfg.min_confidence;
-    if (heuristic_confident) {
-        IntentRouteOutcome out;
-        out.intent = hint;
-        out.timings.tier = "heuristic";
-        out.timings.embed_ms = embed_ms;
-        return finish(std::move(out), started, route_cfg);
-    }
-
-    auto give_up = [&](IntentRouteOutcome out, const std::string& error) {
-        out.intent = fallback_intent(hint, route_cfg, error);
-        out.timings.tier = "fallback";
-        out.timings.error = error;
-        out.timings.embed_ms = embed_ms;
-        return finish(std::move(out), started, route_cfg);
-    };
-
-    if (!luna) {
-        IntentRouteOutcome out;
-        return give_up(std::move(out), "no luna backend");
-    }
-
-    const auto options = build_route_options(in.roster, route_cfg.option_desc_chars);
-    if (options.size() < 2) {
-        IntentRouteOutcome out;
-        return give_up(std::move(out), "need at least two specialists");
-    }
-
-    DecisionRequest request;
-    request.state = in.text;
-    request.question = kRouteQuestion;
-    request.options = options;
-
-    auto state = std::make_shared<CallState>();
-    state->key = key;
-    state->cache = &cache;
-    state->capacity = route_cfg.cache_entries;
-    state->allow_store = route_cfg.cache_ttl_ms > 0;
-
-    const auto luna_started = std::chrono::steady_clock::now();
-    std::thread worker([state, luna, request]() {
-        DecisionResult result;
-        try {
-            result = luna(request, *state->cancel);
-        } catch (const std::exception& e) {
-            result.ok = false;
-            result.error = e.what();
-        } catch (...) {
-            result.ok = false;
-            result.error = "luna decision failed";
-        }
-        {
-            std::lock_guard<std::mutex> lock(state->mu);
-            state->result = result;
-            state->done = true;
-        }
-        state->cv.notify_all();
-        if (state->allow_store && result.ok && !result.choice.empty() && state->cache)
-            state->cache->store(state->key, result, state->capacity);
-        if (state->finished)
-            state->finished->store(true, std::memory_order_release);
-    });
-
-    std::string speculative = !embed_guess.empty() ? embed_guess : hint.target_agent;
-    if (speculative.empty()) speculative = route_cfg.default_agent;
-    if (speculative.empty()) speculative = "index";
-    if (context_load) {
-        try {
-            context_load(speculative);
-        } catch (...) {}
-    }
-
-    const auto deadline = luna_started + std::chrono::milliseconds(
-        route_cfg.timeout_ms < 1 ? 1 : route_cfg.timeout_ms);
-    bool ready = false;
-    DecisionResult result;
-    {
-        std::unique_lock<std::mutex> lock(state->mu);
-        if (!state->done) {
-            const auto now = std::chrono::steady_clock::now();
-            if (now < deadline) {
-                // libstdc++ waits on steady_clock with pthread_cond_clockwait.
-                // GCC 11's ThreadSanitizer intercepts pthread_cond_timedwait
-                // and does not intercept pthread_cond_clockwait, so a
-                // steady_clock wait_for leaves mu looking locked when the
-                // worker acquires it. system_clock uses the intercepted wait.
-                const auto remaining = std::chrono::duration_cast<
-                    std::chrono::system_clock::duration>(deadline - now);
-                state->cv.wait_until(
-                    lock,
-                    std::chrono::system_clock::now() + remaining,
-                    [&] { return state->done; });
-            }
-        }
-        ready = state->done;
-        if (ready) result = state->result;
-    }
-
-    if (!ready) {
-        state->cancel->store(true, std::memory_order_release);
-        const double luna_ms = elapsed_ms(luna_started);
-        cache.adopt_worker(std::move(worker), state->cancel, state->finished);
-        IntentRouteOutcome out;
-        out.used_luna = true;
-        out.timings.luna_ms = luna_ms;
-        return give_up(std::move(out), "luna timeout");
-    }
-    if (worker.joinable()) worker.join();
-    const double luna_ms = result.latency_ms > 0 ? result.latency_ms : elapsed_ms(luna_started);
 
     IntentRouteOutcome out;
-    out.used_luna = true;
-    out.timings.luna_ms = luna_ms;
-    if (!result.ok || result.choice.empty()) {
-        const std::string error = result.error.empty() ? "luna returned no choice" : result.error;
-        return give_up(std::move(out), error);
-    }
-    Marginal m = marginalize(result);
-    if (m.agent.empty()) {
-        return give_up(std::move(out), "luna distribution had no agent");
-    }
-    fill_from_marginal(out.intent, hint, m, route_cfg, out.timings);
+    out.request_hash = hash;
     out.timings.embed_ms = embed_ms;
-    if (route_cfg.cache_ttl_ms > 0)
-        cache.store(key, result, route_cfg.cache_entries);
-    return finish(std::move(out), started, route_cfg);
+    const bool embed_confident =
+        embed_scored && embed_confidence >= route_cfg.embed_min_confidence;
+    if (embed_scored) {
+        out.intent = hint;
+        out.intent.target_agent = embed_choice;
+        out.intent.confidence = embed_confidence;
+        out.intent.source = "embed";
+        out.intent.llm_used = false;
+        out.intent.malformed = false;
+        if (hint.target_agent != embed_choice) {
+            out.intent.kind = "unknown";
+            out.intent.brief = "Route to " + embed_choice;
+        }
+        if (out.intent.brief.empty())
+            out.intent.brief = "Route to " + embed_choice;
+        out.timings.tier = "embed";
+        out.timings.choose_model = false;
+    } else {
+        out.intent = fallback_intent(hint, route_cfg, "embedding unavailable");
+        out.timings.tier = "fallback";
+        out.timings.error = "embedding unavailable";
+        out.timings.choose_model = false;
+    }
+
+    const std::string sync_agent = agent_or_index(out.intent.target_agent);
+    const bool want_luna = static_cast<bool>(luna) && !embed_confident;
+    std::vector<DecisionOption> options;
+    if (want_luna)
+        options = build_route_options(in.roster, route_cfg.option_desc_chars);
+
+    IntentDecisionRecord rec;
+    rec.request_hash = hash;
+    rec.tier = out.timings.tier;
+    rec.final_agent = sync_agent;
+    if (embed_scored) {
+        rec.embed_choice = embed_choice;
+        rec.embed_prob = embed_prob;
+        rec.embed_prob_known = embed_prob_known;
+    }
+    cache.record_decision(rec);
+
+    if (want_luna && options.size() >= 2) {
+        DecisionRequest request;
+        request.state = in.text;
+        request.question = kRouteQuestion;
+        request.options = std::move(options);
+
+        auto state = std::make_shared<BgCall>();
+        state->key = key;
+        state->hash = hash;
+        state->cache = &cache;
+        state->capacity = route_cfg.cache_entries;
+        state->allow_store = route_cfg.cache_ttl_ms > 0;
+        out.used_luna = true;
+        out.luna_finished = state->finished;
+        cache.track_luna(hash, sync_agent, state->finished);
+
+        const int timeout_ms = route_cfg.timeout_ms < 1 ? 1 : route_cfg.timeout_ms;
+        std::thread worker([state, luna, request, timeout_ms]() {
+            struct MarkFinished {
+                std::shared_ptr<std::atomic<bool>> flag;
+                ~MarkFinished() {
+                    if (flag) flag->store(true, std::memory_order_release);
+                }
+            } mark{state->finished};
+
+            const auto luna_started = std::chrono::steady_clock::now();
+            const auto deadline = luna_started + std::chrono::milliseconds(timeout_ms);
+            std::atomic<bool> call_done{false};
+            std::thread killer([&] {
+                while (!call_done.load(std::memory_order_acquire)) {
+                    if (std::chrono::steady_clock::now() >= deadline) {
+                        state->cancel->store(true, std::memory_order_release);
+                        return;
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                }
+            });
+            struct StopKiller {
+                std::atomic<bool>& call_done;
+                std::thread& killer;
+                ~StopKiller() {
+                    call_done.store(true, std::memory_order_release);
+                    if (killer.joinable()) killer.join();
+                }
+            } stop{call_done, killer};
+
+            DecisionResult result;
+            try {
+                result = luna(request, *state->cancel);
+            } catch (const std::exception& e) {
+                result.ok = false;
+                result.error = e.what();
+            } catch (...) {
+                result.ok = false;
+                result.error = "luna decision failed";
+            }
+
+            const bool cancelled = state->cancel->load(std::memory_order_acquire);
+            const bool accept = !cancelled && result.ok && !result.choice.empty();
+            const double luna_ms =
+                result.latency_ms > 0 ? result.latency_ms : elapsed_ms(luna_started);
+            std::string choice;
+            double prob = 0;
+            bool prob_known = false;
+            double confidence = 0;
+            if (accept) {
+                Marginal m = marginalize(result);
+                choice = m.agent;
+                prob = m.probability;
+                prob_known = distribution_has_known(result);
+                confidence = m.confidence;
+            }
+            const DecisionResult* store = nullptr;
+            if (accept && !choice.empty() && state->allow_store) store = &result;
+            if (state->cache) {
+                state->cache->settle_luna(state->hash, state->key, store, state->capacity,
+                                          choice, prob, prob_known, luna_ms, confidence);
+            }
+        });
+        cache.adopt_worker(std::move(worker), state->cancel, state->finished);
+    }
+
+    if (context_load) {
+        try {
+            context_load(sync_agent);
+        } catch (...) {}
+    }
+    return finish(std::move(out), started, route_cfg, &cache);
+}
+
+struct TurnBinding {
+    IntentRouteCache* cache = nullptr;
+    std::string hash;
+};
+
+thread_local TurnBinding tl_turn;
+
+void intent_route_bind_turn(IntentRouteCache* cache, const std::string& request_hash) {
+    tl_turn.cache = cache;
+    tl_turn.hash = request_hash;
+}
+
+void intent_route_clear_turn() {
+    tl_turn.cache = nullptr;
+    tl_turn.hash.clear();
+}
+
+LunaReroute poll_luna_reroute_for_turn(const IntentRouteConfig& cfg) {
+    if (!tl_turn.cache || tl_turn.hash.empty()) return {};
+    return tl_turn.cache->poll_reroute(tl_turn.hash, cfg);
+}
+
+void note_intent_advisor(IntentRouteCache& cache,
+                         const std::string& request_hash,
+                         const std::string& verdict) {
+    cache.note_advisor(request_hash, verdict);
+}
+
+void note_intent_advisor_for_turn(const std::string& verdict) {
+    if (!tl_turn.cache || tl_turn.hash.empty()) return;
+    note_intent_advisor(*tl_turn.cache, tl_turn.hash, verdict);
 }
 
 } // namespace arbiter
