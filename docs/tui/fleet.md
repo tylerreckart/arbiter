@@ -10,7 +10,7 @@ The pane occupies the **right rail** (~24–28 columns) once a job has at least 
 
 Idle sessions keep the rail free so conversation panes are not crowded. An empty Fleet box is not shown unless you force focus with `Ctrl-w f`.
 
-When both Fleet and Session want the rail (single pane, wide terminal, a job is live), Fleet stacks on top and sizes to its rows: the title, an optional reconcile overlay, and the tree. One agent is a short box. The list caps at 12 rows and scrolls; Session, Agent, Todos, and Tools keep the rest of the column (at least 14 rows when the terminal is tall enough to spare them). With no Session sidebar (a multi-pane layout) the fleet box is still content-sized rather than the full column.
+When both Fleet and Session want the rail (single pane, wide terminal, a job is live), Fleet stacks on top and sizes to its rows: the title, an optional reconcile overlay, the tree, and one detail line under the list. One agent is a short box. The detail line is always reserved, so moving the selection does not resize the rail. The list caps at 12 rows and scrolls; Session, Agent, Todos, and Tools keep the rest of the column (at least 14 rows when the terminal is tall enough to spare them). With no Session sidebar (a multi-pane layout) the fleet box is still content-sized rather than the full column.
 
 ## What each row shows
 
@@ -19,16 +19,18 @@ When both Fleet and Session want the rail (single pane, wide terminal, a job is 
 │ ensure · wave 2     │
 │ Δ 3 residual · 2 held│
 │                     │
-│ ● index        fetch│
-│ ├ ● researcher_a 1.2k│
-│ └ ◇ writer          │
+│ ● index          read│
+│ ├ ● researcher   1.2k│
+│ └ ◌ writer       wait│
+│ index · read src/tui│
 ╰─────────────────────╯
 ```
 
-- **Indent** follows `depth` (0 master, 1 delegated, 2 sub-sub). The depth cap is 2; the tree does not invent a third level.
+- **Indent** follows `depth` (0 master, 1 delegated, 2 sub-sub). The depth cap is 2; the tree does not invent a third level. Only the real last sibling uses `└`.
 - **Status:** `●` running, `○` not started, `◌` waiting, `✓` ok, `✗` failed, `⊘` cancelled. Colour follows that state.
-- **Name** of the agent. Reconcile JIT workers get a `◇` marker (ephemeral clone). `ARBITER_GLYPHS=ascii` swaps these for the ASCII-safe set (`*`, `-`, `~`, `+`, `x`, `/`, `^`).
-- **Active tool** while a `/cmd` is in flight; otherwise **token totals** for that stream.
+- **Name** of the agent, kept whole down to 8 cells. A narrower row drops the tail before it cuts the name further. Reconcile JIT workers get a `◇` marker (ephemeral clone). `ARBITER_GLYPHS=ascii` swaps these for the ASCII-safe set (`*`, `-`, `~`, `+`, `x`, `/`, `^`).
+- **Tail** is a short verb (`read`, `exec`, `wait`, `fail`, `stop`) or a token count. Paths and `waiting on <id>` stay off the row.
+- **Detail line** under the list is always reserved (so the box does not resize) and shows the selected agent's full tool, blocked-on id, or token count.
 
 The overlay at the top is reconcile-only: `mode=ensure` residual vs held clause counts and the current wave, next to spawn/teardown rows. The pane does not run reconcile (that is still `POST /v1/reconcile`); it only displays events.
 
@@ -42,12 +44,13 @@ Selecting a row focuses the conversation pane bound to that stream so you can wa
 | Click a fleet row | Select that agent and focus its pane. |
 | `↑` / `↓` (or `k` / `j`) | Move the selection (while fleet is focused). |
 | `Enter` | Focus / open the pane bound to the selected stream. |
-| `Esc` | On a **running** row: cancel that pane's in-flight turn (existing kill-switch). Otherwise leave fleet focus. |
+| `Esc` | Leave fleet focus. Does not cancel the turn. |
+| `x` | Cancel the selected row's in-flight turn (existing kill-switch). |
 | Wheel over the tree | Scroll the list. |
 
 `/parallel` children stream into the **host** pane (interim `→ agent` headers). Selecting them focuses that host — the dashboard does not auto-split a pane per child (that would drown the layout). `/pane` spawns already have their own leaf; selecting that agent focuses the spawned pane.
 
-Cancel does **not** invent a per-stream kill protocol. Esc maps to the same `cancel_pane_turn` path as interrupting a focused conversation pane (local `CancelToken` or remote `POST /v1/requests/:id/cancel`).
+Cancel does **not** invent a per-stream kill protocol. `x` maps to the same `cancel_pane_turn` path as interrupting a focused conversation pane (local `CancelToken` or remote `POST /v1/requests/:id/cancel`). `Esc` only returns focus to the input.
 
 ## Event → tree
 

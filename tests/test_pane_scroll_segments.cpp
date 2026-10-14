@@ -51,6 +51,53 @@ TEST_CASE("ToolSegment Started then Finished updates one row") {
     CHECK(view.total_visual_rows() > after_start);
 }
 
+TEST_CASE("ToolSegment splits the verb from the target") {
+    load_tui_design("");
+    TUI tui;
+    PaneScrollView view;
+    bind_view(view, tui, 80, 40);
+
+    ToolActivityEvent done;
+    done.phase = ToolActivityEvent::Phase::Finished;
+    done.id = "t-exec";
+    done.label = "exec:git status --short";
+    done.kind = "exec";
+    done.ok = true;
+    done.detail = "git status --short";
+    done.result_preview = " M src/a.cpp";
+    view.upsert_tool(done);
+
+    CHECK(view.find_rows("exec:").empty());
+    CHECK_FALSE(view.find_rows("exec").empty());
+    CHECK_FALSE(view.find_rows("git status --short").empty());
+    // Success output stays behind Ctrl-O.
+    CHECK(view.find_rows("src/a.cpp").empty());
+    CHECK(view.toggle_code_block_in_view(/*scroll_offset=*/0));
+    CHECK_FALSE(view.find_rows("src/a.cpp").empty());
+}
+
+TEST_CASE("failed tool always shows one ERR line") {
+    load_tui_design("");
+    TUI tui;
+    PaneScrollView view;
+    bind_view(view, tui, 80, 40);
+
+    ToolActivityEvent done;
+    done.phase = ToolActivityEvent::Phase::Finished;
+    done.id = "t-fail";
+    done.label = "exec:make -j";
+    done.kind = "exec";
+    done.ok = false;
+    done.result_preview = "make: *** [all] Error 2";
+    view.upsert_tool(done);
+
+    // Lead-in blank + header + ERR line. No expand required.
+    CHECK(view.total_visual_rows() == 3);
+    CHECK_FALSE(view.find_rows("ERR:").empty());
+    CHECK_FALSE(view.find_rows("Error 2").empty());
+    CHECK(view.find_rows("exec:").empty());
+}
+
 TEST_CASE("ThinkingSegment honors wrap width and kPreviewRows when collapsed") {
     load_tui_design("");
     TUI tui;
@@ -58,19 +105,17 @@ TEST_CASE("ThinkingSegment honors wrap width and kPreviewRows when collapsed") {
     bind_view(view, tui, 40, 40);
     const int baseline = view.total_visual_rows();
 
-    // Five short lines → top border + kPreviewRows (3, last with inline …)
-    // + bottom border = 5 rows. Truncation no longer adds a dedicated row.
+    // Five short lines → lead-in blank + top border + 1 preview row
+    // + bottom border = 4. Truncation folds into that preview row.
     view.append_thinking("one\ntwo\nthree\nfour\nfive");
     const int collapsed = view.total_visual_rows() - baseline;
-    // May include a leading block_gap blank; the thinking box itself is 5 rows.
-    CHECK(collapsed >= 5);
-    CHECK(collapsed <= 7);
+    CHECK(collapsed == 4);
 
     CHECK(view.toggle_code_block_in_view(/*scroll_offset=*/0));
     const int expanded = view.total_visual_rows() - baseline;
     CHECK(expanded > collapsed);
-    // Expanding reveals the two hidden body lines (no ellipsis-row swap).
-    CHECK(expanded - collapsed == 2);
+    // Expanding reveals the four hidden body lines.
+    CHECK(expanded - collapsed == 4);
 }
 
 TEST_CASE("ThinkingSegment rounded box adds top and bottom border rows") {
@@ -117,12 +162,15 @@ TEST_CASE("ThinkingSegment streamed deltas grow one box, not stacked chrome") {
     view.append_thinking("one");
     const int after_first = view.total_visual_rows();
 
-    // Contiguous delta appends into the same segment: exactly one more body
-    // row; borders are counted once, so no duplicated chrome accumulates.
+    // Contiguous deltas stay in the same box. The collapsed preview is one
+    // row, so further lines do not grow the chrome.
     view.append_thinking("\ntwo");
-    CHECK(view.total_visual_rows() == after_first + 1);
+    CHECK(view.total_visual_rows() == after_first);
 
     view.append_thinking("\nthree");
+    CHECK(view.total_visual_rows() == after_first);
+
+    CHECK(view.toggle_code_block_in_view(/*scroll_offset=*/0));
     CHECK(view.total_visual_rows() == after_first + 2);
 }
 
@@ -131,15 +179,20 @@ TEST_CASE("ThinkingSegment find maps title to the top border row") {
     PaneScrollView view;
     bind_view(view, tui, 80, 40);
 
-    view.append_thinking("alpha\nbeta");
-    const auto title_hits = view.find_rows("thinking");
+    view.append_thinking("alpha\nbeta", /*new_block=*/true, "researcher");
+    const auto title_hits = view.find_rows("thought");
     REQUIRE(title_hits.size() == 1);
+    CHECK_FALSE(view.find_rows("researcher").empty());
 
+    const auto alpha_hits = view.find_rows("alpha");
+    REQUIRE(alpha_hits.size() == 1);
+    // Title sits on the top border; the one-row preview is directly beneath it.
+    CHECK(alpha_hits[0] == title_hits[0] + 1);
+
+    CHECK(view.toggle_code_block_in_view(/*scroll_offset=*/0));
     const auto body_hits = view.find_rows("beta");
     REQUIRE(body_hits.size() == 1);
-    // Title sits on the top border; body rows start directly beneath it.
     CHECK(body_hits[0] == title_hits[0] + 2);
-    CHECK(title_hits[0] + 2 < view.total_visual_rows());
 }
 
 TEST_CASE("ThinkingSegment renders markdown instead of raw asterisks") {
@@ -150,6 +203,9 @@ TEST_CASE("ThinkingSegment renders markdown instead of raw asterisks") {
     view.append_thinking("**Correcting memory links**\n\nbody text");
     CHECK(view.find_rows("**Correcting").empty());
     CHECK_FALSE(view.find_rows("Correcting memory links").empty());
+    // The collapsed preview is one row; the rest appears after Ctrl-O.
+    CHECK(view.find_rows("body text").empty());
+    CHECK(view.toggle_code_block_in_view(/*scroll_offset=*/0));
     CHECK_FALSE(view.find_rows("body text").empty());
 }
 
@@ -161,18 +217,19 @@ TEST_CASE("ThinkingSegment folds truncation mark into the last preview row") {
 
     view.append_thinking("one\ntwo\nthree\nfour\nfive");
     const int collapsed = view.total_visual_rows() - baseline;
-    // Box is top + 3 body + bottom (+ optional gap) — no lone ellipsis row.
-    // gap(0|1) + 5 box rows.
-    CHECK(collapsed >= 5);
-    CHECK(collapsed <= 6);
-    CHECK_FALSE(view.find_rows("three").empty());
-    // Inline … is searchable as part of the last preview line.
+    // Lead-in blank + top + 1 preview + bottom. Later lines stay hidden.
+    CHECK(collapsed == 4);
+    CHECK(view.find_rows("three").empty());
+    // Inline … is searchable as part of the preview line.
     CHECK_FALSE(view.find_rows("\xE2\x80\xA6").empty());
+    CHECK(view.toggle_code_block_in_view(/*scroll_offset=*/0));
+    CHECK_FALSE(view.find_rows("three").empty());
 }
 
 TEST_CASE("ThinkingSegment wrap width grows visual rows for long lines") {
     load_tui_design("");
-    // Long enough that even an 80-col wrap exceeds kPreviewRows (3).
+    // Long enough that an expanded wrap differs by width. Collapsed preview
+    // is one row either way.
     const std::string blob(400, 'x');
 
     TUI tui_n;
@@ -206,7 +263,7 @@ TEST_CASE("ThinkingSegment renders markdown structure in body rows") {
     CHECK(view.total_visual_rows() - baseline >= 4);
 }
 
-TEST_CASE("UserEchoSegment uses rounded box chrome like thinking") {
+TEST_CASE("UserEchoSegment is a rail row without a user box") {
     load_tui_design("");
     TUI tui;
     PaneScrollView view;
@@ -215,14 +272,12 @@ TEST_CASE("UserEchoSegment uses rounded box chrome like thinking") {
 
     view.append_user_echo("brief");
     const int rows = view.total_visual_rows() - baseline;
-    // Lead-in blank + top + body + bottom.
-    CHECK(rows == 4);
+    // Lead-in blank + one text row. No title border.
+    CHECK(rows == 2);
 
-    const auto title_hits = view.find_rows("user");
-    REQUIRE(title_hits.size() == 1);
+    CHECK(view.find_rows("user").empty());
     const auto body_hits = view.find_rows("brief");
     REQUIRE(body_hits.size() == 1);
-    CHECK(body_hits[0] == title_hits[0] + 1);
 }
 
 TEST_CASE("UserEchoSegment collapses long pastes like thinking") {
@@ -234,8 +289,8 @@ TEST_CASE("UserEchoSegment collapses long pastes like thinking") {
 
     view.append_user_echo("one\ntwo\nthree\nfour\nfive");
     const int collapsed = view.total_visual_rows() - baseline;
-    // gap + top + 3 preview + bottom = 6.
-    CHECK(collapsed == 6);
+    // gap + 3 preview rows.
+    CHECK(collapsed == 4);
 
     CHECK(view.toggle_code_block_in_view(/*scroll_offset=*/0));
     const int expanded = view.total_visual_rows() - baseline;
@@ -250,7 +305,21 @@ TEST_CASE("UserEchoSegment skips echoed /find from find_rows") {
 
     view.append_user_echo("/find needle");
     CHECK(view.find_rows("needle").empty());
-    CHECK_FALSE(view.find_rows("user").empty());
+    CHECK(view.find_rows("/find").empty());
+    CHECK(view.find_rows("user").empty());
+}
+
+TEST_CASE("UserEchoSegment wraps on word boundaries") {
+    load_tui_design("");
+    TUI tui;
+    PaneScrollView view;
+    // cols 15 → content width 11, rail takes 3, body wraps at 8.
+    bind_view(view, tui, 15, 40);
+
+    view.append_user_echo("hello agent");
+    CHECK(view.find_rows("hello ag").empty());
+    CHECK_FALSE(view.find_rows("hello").empty());
+    CHECK_FALSE(view.find_rows("agent").empty());
 }
 
 TEST_CASE("block gaps are a single blank row between distinct segment kinds") {
@@ -261,8 +330,8 @@ TEST_CASE("block gaps are a single blank row between distinct segment kinds") {
 
     view.append_user_echo("hello");
     const int after_echo = view.total_visual_rows();
-    // Lead-in blank + rounded box (top + body + bottom).
-    CHECK(after_echo == 4);
+    // Lead-in blank + one rail row.
+    CHECK(after_echo == 2);
 
     view.append_thinking("plan", /*new_block=*/true);
     const int after_think = view.total_visual_rows();
@@ -339,8 +408,8 @@ TEST_CASE("first user echo has a lead-in blank under the header") {
     CHECK(view.total_visual_rows() == 0);
 
     view.append_user_echo("hi");
-    // BlankSegment + rounded box (top + body + bottom).
-    CHECK(view.total_visual_rows() == 4);
+    // BlankSegment + one rail row.
+    CHECK(view.total_visual_rows() == 2);
 }
 
 TEST_CASE("find_rows maps wrapped prose matches to visual row") {
@@ -521,7 +590,7 @@ TEST_CASE("click toggles expandable segment under the pointer") {
 
     view.append_thinking("one\ntwo\nthree\nfour\nfive");
     const int collapsed = view.total_visual_rows();
-    CHECK(collapsed >= 5);
+    CHECK(collapsed >= 4);
 
     // append_thinking inserts a leading block_gap blank; click past it into
     // the thinking chrome (same geometry PaneScrollView::bind uses).

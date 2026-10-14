@@ -250,18 +250,13 @@ void ReplSession::run_input_loop() {
 
             FleetKey action = fleet_sidebar.handle_key(key, csi, csi_params);
             if (action == FleetKey::Escape) {
-                bool running = false;
-                if (snap.selected >= 0
-                    && snap.selected < static_cast<int>(snap.rows.size())) {
-                    running = snap.rows[static_cast<size_t>(snap.selected)].running;
-                }
-                if (running) {
-                    cancel_fleet_selection();
-                    if (pump_notify) pump_notify();
-                    continue;
-                }
                 fleet_sidebar.exit_focus();
                 refresh_focused_input.store(true);
+                if (pump_notify) pump_notify();
+                continue;
+            }
+            if (action == FleetKey::Cancel) {
+                cancel_fleet_selection();
                 if (pump_notify) pump_notify();
                 continue;
             }

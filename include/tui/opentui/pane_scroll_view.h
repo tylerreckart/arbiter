@@ -85,13 +85,13 @@ public:
     // Create or update an in-scroll tool activity row (by event.id).
     void upsert_tool(const ToolActivityEvent& event, bool new_block = false);
     // Append provider reasoning/thinking into a collapsible segment.
-    // `agent_id` is retained for callers; chrome currently uses a shared label.
+    // `agent_id` is the thinking-box title, drawn in that agent's color.
     void append_thinking(std::string_view delta,
                          bool new_block = false,
                          std::string_view agent_id = {});
-    // User submit echo: same rounded-box chrome dialect as ThinkingSegment
-    // (title "user", scroll bg, muted border, info title). Plain-text body;
-    // collapses long pastes like thinking.
+    // User submit echo: one-cell accent rail and a prompt mark, matching
+    // the input line. Plain text, wrapped on word boundaries. Long pastes
+    // collapse; Ctrl-O expands them.
     void append_user_echo(std::string_view text, bool new_block = true);
     void clear();
 
@@ -322,14 +322,15 @@ private:
     };
 
     // Collapsible provider reasoning/thinking block. Collapsed by default.
-    // Rounded-box chrome with plain "thinking" breaking the top border; body
-    // is markdown-rendered (StyledLine) with a one-cell inset.
+    // Rounded-box chrome. The top border is the agent id in that agent's
+    // color plus a dim "thought". Body is markdown with a one-cell inset.
+    // Collapsed preview is one row; Ctrl-O expands it.
     struct ThinkingSegment final : Segment {
         std::string text_;
         std::string agent_id_;
         bool expanded_ = false;
         mutable int wrap_cols_{80};
-        static constexpr int kPreviewRows = 3;
+        static constexpr int kPreviewRows = 1;
         static constexpr int kExpandedCap = 40;
         // Border column + one-cell inset on each side.
         static constexpr int kBoxChromeCols = 4;
@@ -359,17 +360,17 @@ private:
         mutable std::vector<StyledLine> body_cache_;
     };
 
-    // User submit echo. Shares ThinkingSegment's rounded-box chrome (scroll
-    // bg, muted border, info title) with title "user". Plain-text body; long
-    // pastes collapse to kPreviewRows like thinking.
+    // User submit echo. One-cell accent rail plus a prompt mark, shared
+    // with the input line. No box. Plain text, wrapped on word boundaries.
+    // Long pastes collapse to kPreviewRows; Ctrl-O expands them.
     struct UserEchoSegment final : Segment {
         std::string text_;
         bool expanded_ = false;
         mutable int wrap_cols_{80};
         static constexpr int kPreviewRows = 3;
         static constexpr int kExpandedCap = 40;
-        static constexpr int kBoxChromeCols = 4;
-        static constexpr int kBodyInset = 1;
+        // Rail cell + prompt mark + one gap before the text.
+        static constexpr int kRailCols = 3;
 
         void set_text(std::string_view text);
         void toggle_expanded();
@@ -414,6 +415,7 @@ private:
         [[nodiscard]] bool can_expand() const;
         [[nodiscard]] std::string status_glyph() const;
         [[nodiscard]] std::string header_text() const;
+        [[nodiscard]] std::string error_line() const;
         [[nodiscard]] int visual_rows(int content_w) const override;
         void set_wrap_cols(int cols) override;
         void collect_lines(std::vector<std::string>& out) const override;

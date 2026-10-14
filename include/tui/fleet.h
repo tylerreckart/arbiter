@@ -82,6 +82,7 @@ struct FleetPaintRow {
     std::string conversation_id;
     std::string pane_agent;
     std::string line;       // single scannable display line
+    std::string detail;     // full tool / blocked-on / tokens for the detail row
 };
 
 struct FleetSnapshot {
@@ -104,7 +105,7 @@ enum class FleetKey {
     Down,
     Enter,     // focus/open the pane bound to the selected row
     Escape,    // leave fleet focus (no cancel)
-    Cancel,    // Esc on a running row → existing pane kill-switch
+    Cancel,    // x cancels the selected running turn
     PageUp,
     PageDown,
 };
@@ -235,11 +236,12 @@ private:
 };
 
 // Non-list rows in the fleet rect: blank above the box, title border,
-// blank under the title, bottom border, plus overlay lines and the gap
-// under a reconcile header.
+// blank under the title, the selected-row detail line, bottom border,
+// plus overlay lines and the gap under a reconcile header. The detail
+// row is always reserved so the box height does not toggle.
 inline int fleet_sidebar_chrome_rows(int overlay_lines) {
     const int ov = overlay_lines > 0 ? overlay_lines : 0;
-    return 4 + ov + (ov > 0 ? 1 : 0);
+    return 5 + ov + (ov > 0 ? 1 : 0);
 }
 
 // Tree rows that fit in a fleet rect of `rect_h` (the scroll window).
@@ -262,8 +264,9 @@ inline constexpr int kFleetSessionMinRows = 14;
 int fleet_sidebar_height(int term_rows, int content_rows, int overlay_lines,
                          bool reserve_session);
 
-// One-line tree row: depth indent, status, name, optional jit tag, tool
-// or token totals.  Width-capped for a ~24–28 col rail.
+// One-line tree row: depth indent, status, name, optional jit tag, and a
+// short tail (verb or token count). The name is kept down to 8 cells;
+// a path never lands in the tail. Width-capped for a ~24–28 col rail.
 std::string format_fleet_row(const FleetNode& node,
                              bool last_sibling,
                              bool parent_last,

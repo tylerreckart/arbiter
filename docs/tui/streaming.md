@@ -45,11 +45,12 @@ When the agent emits `/fetch`, `/exec`, `/agent`, `/mem`, `/write … /endwrite`
 The thinking and tool-call spinners deliberately don't share a row — early versions both fought for row 1 at 80 ms cadence and produced visible flashing. Header is for "agent is generating"; mid separator is for "agent is calling tools."
 
 When a provider streams a separate reasoning channel (`thinking_delta` /
-`reasoning_content` / Gemini `thought` parts), a collapsed **thinking**
-rounded box also appears in scrollback above the assistant prose — markdown
-body inside the same chrome dialect as user echoes (scroll bg, muted border,
-info title). Expand with `^O`. Models without that channel keep the header
-spinner only. User submits paint as a matching **user** box (plain-text body).
+`reasoning_content` / Gemini `thought` parts), a collapsed thinking box
+appears in scrollback above the assistant prose. The title is the agent id
+in that agent's color plus a dim `thought`, and the markdown body is one
+preview row. Expand with `^O`. Models without that channel keep the header
+spinner only. User submits paint as a one-cell accent rail and `›`, the
+same mark as the input line, wrapped on word boundaries.
 
 ## End of turn
 

@@ -1,5 +1,7 @@
 #include "tui/opentui/pane_input_editor.h"
 
+#include "styled_text.h"
+#include "tui/glyphs.h"
 #include "tui/opentui/engine.h"
 #include "tui/opentui/kitty_key_decode.h"
 #include "tui/opentui/mouse_decode.h"
@@ -19,8 +21,10 @@ namespace arbiter::opentui {
 namespace {
 
 // One cell for the box border; inner pad comes from layout.input_padding_x
-// (default 1) so readline matches thinking/user-echo body inset.
+// (default 1) so readline matches the scroll inset.
 constexpr int kInputBorderCells = 1;
+// Accent rail + prompt mark + one gap. Shared with user-echo rows.
+constexpr int kInputRailCols = 3;
 constexpr int kBracketedPasteEvent = 0x100;
 
 constexpr std::uint8_t kWrapWord = 2;
@@ -379,6 +383,11 @@ void PaneInputEditor::sync_edit_buffer() {
     editBufferSetCursorByOffset(edit_, static_cast<std::uint32_t>(cursor_));
 }
 
+int PaneInputEditor::input_lead_cols_locked() const {
+    if (rsearch_active_) return std::max(0, prompt_cols_);
+    return std::max(0, prompt_cols_) + kInputRailCols;
+}
+
 void PaneInputEditor::update_input_rows() {
     int cols = tui_.cols();
     if (cols <= 0) cols = 80;
@@ -388,7 +397,7 @@ void PaneInputEditor::update_input_rows() {
     const int chrome_inset = kInputBorderCells + inner_pad;
     const int content_cols = std::max(1, cols - (outer_pad * 2) - (chrome_inset * 2));
     const int editor_cols =
-        std::max(1, content_cols - std::max(0, prompt_cols_));
+        std::max(1, content_cols - input_lead_cols_locked());
     const int editor_rows = visual_position(buffer_, editor_cols).row + 1;
     tui_.grow_input(editor_rows + 2);
 }
@@ -433,7 +442,7 @@ void PaneInputEditor::draw(OpenTuiHandle frame, const TUI& tui, bool focused) co
         return;
     }
 
-    const int prompt_skip = std::max(0, prompt_cols_);
+    const int prompt_skip = input_lead_cols_locked();
     const int editor_w = std::max(1,
                                   cols - (outer_pad * 2) - (chrome_inset * 2)
                                       - prompt_skip);
@@ -452,7 +461,28 @@ void PaneInputEditor::draw(OpenTuiHandle frame, const TUI& tui, bool focused) co
                          static_cast<int32_t>(py));
 
     const std::string plain_prompt = plain_text(prompt_);
-    if (!plain_prompt.empty()) {
+    if (!rsearch_active_) {
+        const TuiRgba& rail = d.content.accent_prompt;
+        const int interior = std::max(1, tui.input_rows() - 2);
+        for (int i = 0; i < interior; ++i) {
+            bufferFillRect(frame,
+                           content_x,
+                           py + static_cast<std::uint32_t>(i),
+                           1,
+                           1,
+                           rail.data());
+        }
+        const char* mark = ">";
+        if (glyph_mode() == GlyphMode::Unicode
+            && arbiter::display_width("\u203A") == 1) {
+            mark = "\u203A";
+        }
+        draw_plain_text(frame, content_x + 1, py, mark, rail, &d.bg.scroll);
+        if (!plain_prompt.empty()) {
+            draw_plain_text(frame, content_x + static_cast<std::uint32_t>(kInputRailCols),
+                            py, plain_prompt, d.accent.primary);
+        }
+    } else if (!plain_prompt.empty()) {
         draw_plain_text(frame, content_x, py, plain_prompt, d.accent.primary);
     }
     if (cursor_visible_now()) {
@@ -500,7 +530,7 @@ void PaneInputEditor::set_cursor_from_click(int term_x, int term_y) {
     const int px = tui_.left_col() - 1;
     const int py = tui_.input_top_row_pub();
     const int content_x = px + outer_pad + chrome_inset;
-    const int prompt_skip = std::max(0, prompt_cols_);
+    const int prompt_skip = input_lead_cols_locked();
     const int editor_w = std::max(1,
                                   cols - (outer_pad * 2) - (chrome_inset * 2)
                                       - prompt_skip);

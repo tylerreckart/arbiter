@@ -99,12 +99,14 @@ void draw_fleet_sidebar(OpenTuiHandle frame,
                      title_fg);
 
     int y = panel_top_y + 2;
-    // Last interior row: one above the bottom border.
-    const int list_bottom = panel_bottom_y - 1;
+    // Last interior row is the selected-row detail line. The tree stops
+    // above it so the box height stays put when selection changes.
+    const int detail_y = panel_bottom_y - 1;
+    const int list_bottom = detail_y - 1;
 
     const auto overlay_lines = format_fleet_overlay(snap.overlay, content_w);
     for (const auto& line : overlay_lines) {
-        if (y > list_bottom) return;
+        if (y > list_bottom) break;
         draw_text(frame,
                   static_cast<std::uint32_t>(content_x),
                   static_cast<std::uint32_t>(y),
@@ -126,8 +128,7 @@ void draw_fleet_sidebar(OpenTuiHandle frame,
                       sc.label,
                       bg);
         }
-        return;
-    }
+    } else {
 
     const int vis = std::max(0, list_bottom - y + 1);
     int idx = std::max(0, snap.scroll_offset);
@@ -161,6 +162,19 @@ void draw_fleet_sidebar(OpenTuiHandle frame,
         ++y;
         ++idx;
         ++painted;
+    }
+    }
+
+    if (detail_y >= panel_top_y + 2 && !snap.rows.empty()) {
+        int sel = snap.selected;
+        if (sel < 0 || sel >= static_cast<int>(snap.rows.size())) sel = 0;
+        const std::string& detail = snap.rows[static_cast<size_t>(sel)].detail;
+        draw_text(frame,
+                  static_cast<std::uint32_t>(content_x),
+                  static_cast<std::uint32_t>(detail_y),
+                  trim_to_cells(detail, content_w),
+                  sc.label,
+                  bg);
     }
 
     if (snap.total_input + snap.total_output > 0) {

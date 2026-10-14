@@ -112,7 +112,7 @@ TEST_CASE("turn logs stay off the input line and fleet sizes to one agent") {
     // resized frame has been logged, then type again if a late interrupt
     // still eats the first attempt.
     REQUIRE(wait_for_log(s,
-                         "fleet_h=5 fleet_rows=1 session_y=5 session_h=35",
+                         "fleet_h=6 fleet_rows=1 session_y=6 session_h=34",
                          10000));
     s.read_for(400);
 
@@ -147,7 +147,7 @@ TEST_CASE("turn logs stay off the input line and fleet sizes to one agent") {
 
     const std::string log_path = s.home() + "/.arbiter/tui.log";
     REQUIRE(wait_for_log(s,
-                         "fleet_h=5 fleet_rows=1 session_y=5 session_h=35",
+                         "fleet_h=6 fleet_rows=1 session_y=6 session_h=34",
                          10000));
     const std::string logged = read_file(log_path);
     CHECK(logged.find("[info] openrouter_response requested_model=anthropic/claude-haiku-4-5 "

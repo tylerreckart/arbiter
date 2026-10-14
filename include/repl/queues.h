@@ -136,10 +136,10 @@ public:
 
     // Append a reasoning/thinking delta into the current ThinkingSegment
     // (creates one if needed). Collapsed by default in the scroll view.
-    // `agent_id` colors the left accent from the theme agent palette.
+    // `agent_id` is the thinking-box title, drawn in that agent's color.
     void push_thinking(const std::string& delta, const std::string& agent_id = {});
 
-    // User submit echo → UserEchoSegment (rounded box, title "user").
+    // User submit echo → UserEchoSegment (accent rail + prompt mark).
     // `notify` wakes the output pump; the input loop defers that until
     // CommandQueue::push succeeds so a rejected submit can still drop the echo.
     void push_user_echo(std::string_view text, bool notify = true);

@@ -60,6 +60,69 @@ std::string tree_prefix(int depth, bool last_sibling, bool parent_last) {
     return p;
 }
 
+// A row may shrink a long name, but not below this, unless the rail is
+// physically narrower than the tree prefix plus these cells.
+constexpr int kFleetNameMinCells = 8;
+
+std::string tool_verb(const std::string& tool) {
+    if (tool.empty()) return {};
+    const auto colon = tool.find(':');
+    std::string head = colon == std::string::npos ? tool : tool.substr(0, colon);
+    const auto sp = head.find_first_of(" \t");
+    if (sp != std::string::npos) head.resize(sp);
+    return head;
+}
+
+std::string tool_detail_text(const std::string& tool) {
+    const auto colon = tool.find(':');
+    if (colon == std::string::npos) return tool;
+    std::string s = tool;
+    s[colon] = ' ';
+    return s;
+}
+
+// Short tail: a verb or a token count. Never a path or "waiting on <id>".
+std::string fleet_row_tail(const FleetNode& node) {
+    const RunState st = fleet_node_status(node);
+    if (st == RunState::Waiting) return "wait";
+    if (!node.active_tool.empty() && node.running) {
+        const std::string verb = tool_verb(node.active_tool);
+        if (!verb.empty()) return verb;
+    }
+    const int tok = node.input_tokens + node.output_tokens;
+    if (tok > 0) return format_token_count(tok);
+    if (st == RunState::Failed) return "fail";
+    if (st == RunState::Cancelled) return "stop";
+    return {};
+}
+
+std::string fleet_row_detail(const FleetNode& node) {
+    const std::string name = node.agent.empty() ? "?" : node.agent;
+    std::string body;
+    const RunState st = fleet_node_status(node);
+    if (st == RunState::Waiting) {
+        body = "wait";
+        if (!node.blocked_on.empty()) {
+            body += ' ';
+            body += node.blocked_on;
+        }
+    } else if (!node.active_tool.empty() && node.running) {
+        body = tool_detail_text(node.active_tool);
+    } else {
+        const int tok = node.input_tokens + node.output_tokens;
+        if (tok > 0) body = format_token_count(tok);
+        else if (st == RunState::Failed) body = "fail";
+        else if (st == RunState::Cancelled) body = "stop";
+    }
+    if (body.empty()) return name;
+    std::string line = name;
+    line += ' ';
+    line += glyphs().separator;
+    line += ' ';
+    line += body;
+    return line;
+}
+
 }  // namespace
 
 std::string format_fleet_row(const FleetNode& node,
@@ -67,49 +130,46 @@ std::string format_fleet_row(const FleetNode& node,
                              bool parent_last,
                              int max_cells) {
     if (max_cells < 4) max_cells = 4;
-    std::string line = tree_prefix(node.depth, last_sibling, parent_last);
-    line += status_glyph(node);
-    line += " ";
+    const std::string prefix =
+        tree_prefix(node.depth, last_sibling, parent_last)
+        + status_glyph(node) + " ";
     std::string name = node.agent.empty() ? "?" : node.agent;
     if (node.ephemeral) {
-        name += " ";
+        name += ' ';
         name += glyphs().jit;
     }
-    line += name;
 
-    std::string tail;
-    const RunState st = fleet_node_status(node);
-    if (st == RunState::Waiting) {
-        if (node.blocked_on.empty()) tail = "waiting";
-        else if (node.blocked_on.find(' ') != std::string::npos) tail = node.blocked_on;
-        else tail = "waiting on " + node.blocked_on;
-    } else if (!node.active_tool.empty() && node.running) {
-        tail = node.active_tool;
-    } else {
-        const int tok = node.input_tokens + node.output_tokens;
-        if (tok > 0) tail = format_token_count(tok);
-    }
-    if (!tail.empty()) {
-        const int used = static_cast<int>(display_width(line));
-        const int gap = 1;
+    const int prefix_w = static_cast<int>(display_width(prefix));
+    const int name_w = static_cast<int>(display_width(name));
+    const int hard_floor = std::max(0, max_cells - prefix_w);
+    // Full name when it fits. Never cut below 8 unless the row cannot
+    // hold the prefix plus 8 cells.
+    const int name_floor = std::min(kFleetNameMinCells,
+                                    std::min(name_w, hard_floor));
+    int keep = std::min(name_w, hard_floor);
+
+    const std::string tail = fleet_row_tail(node);
+    bool show_tail = !tail.empty();
+    if (show_tail) {
         const int tail_w = static_cast<int>(display_width(tail));
-        int pad = max_cells - used - gap - tail_w;
-        if (pad < 1) {
-            // Trim the name so the tail still fits.
-            const int name_budget = std::max(1, max_cells - tail_w - gap
-                - static_cast<int>(display_width(tree_prefix(node.depth,
-                                                             last_sibling,
-                                                             parent_last)
-                                                 + status_glyph(node) + " ")));
-            name = trim_to_display_cols(name, name_budget);
-            line = tree_prefix(node.depth, last_sibling, parent_last)
-                 + status_glyph(node) + " " + name;
-            pad = max_cells - static_cast<int>(display_width(line))
-                - gap - tail_w;
+        const int gap = 1;
+        if (prefix_w + keep + gap + tail_w > max_cells) {
+            const int room = max_cells - prefix_w - gap - tail_w;
+            if (room >= name_floor) keep = room;
+            else show_tail = false;
         }
-        if (pad < 1) pad = 1;
-        line.append(static_cast<size_t>(pad), ' ');
-        line += tail;
+    }
+    if (!show_tail) keep = std::min(name_w, hard_floor);
+
+    std::string line = prefix + trim_to_display_cols(name, keep);
+    if (show_tail) {
+        const int tail_w = static_cast<int>(display_width(tail));
+        const int used = static_cast<int>(display_width(line));
+        const int pad = max_cells - used - tail_w;
+        if (pad >= 1) {
+            line.append(static_cast<size_t>(pad), ' ');
+            line += tail;
+        }
     }
     return trim_to_display_cols(line, max_cells);
 }
@@ -672,12 +732,18 @@ std::vector<FleetPaintRow> FleetTree::paint_rows(int max_cells) const {
         if (!seen[static_cast<size_t>(i)]) unique.push_back(i);
     }
 
+    // A node is last when the next same-depth sibling never appears.
+    // Deeper descendants in between are its children, not its siblings.
     auto last_sibling = [&](size_t idx_in_unique) -> bool {
-        if (idx_in_unique + 1 >= unique.size()) return true;
-        const int cur_i = unique[idx_in_unique];
-        const int nxt_i = unique[idx_in_unique + 1];
-        return nodes_[static_cast<size_t>(nxt_i)].depth
-            <= nodes_[static_cast<size_t>(cur_i)].depth;
+        const int cur_depth =
+            nodes_[static_cast<size_t>(unique[idx_in_unique])].depth;
+        if (cur_depth <= 0) return true;
+        for (size_t k = idx_in_unique + 1; k < unique.size(); ++k) {
+            const int d = nodes_[static_cast<size_t>(unique[k])].depth;
+            if (d < cur_depth) return true;
+            if (d == cur_depth) return false;
+        }
+        return true;
     };
     auto parent_last = [&](size_t idx_in_unique) -> bool {
         const int cur_depth = nodes_[static_cast<size_t>(unique[idx_in_unique])].depth;
@@ -721,6 +787,7 @@ std::vector<FleetPaintRow> FleetTree::paint_rows(int max_cells) const {
         row.conversation_id = n.conversation_id;
         row.pane_agent = n.pane_agent.empty() ? n.agent : n.pane_agent;
         row.line = format_fleet_row(n, last_sibling(u), parent_last(u), max_cells);
+        row.detail = fleet_row_detail(n);
         out.push_back(std::move(row));
     }
     return out;
@@ -831,6 +898,7 @@ FleetKey FleetSidebarState::handle_key(int key_byte, char csi_final,
                                        const std::string& csi_params) {
     if (key_byte == 'j' || key_byte == 'J') return FleetKey::Down;
     if (key_byte == 'k' || key_byte == 'K') return FleetKey::Up;
+    if (key_byte == 'x' || key_byte == 'X') return FleetKey::Cancel;
     if (key_byte == '\r' || key_byte == '\n') return FleetKey::Enter;
     if (key_byte == 0x1B) {
         if (csi_final == 'A') return FleetKey::Up;
