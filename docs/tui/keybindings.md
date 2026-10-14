@@ -41,7 +41,7 @@ Disable with `"mouse": false` under `layout` in `~/.arbiter/tui.json`.
 
 | Key       | Action                                                                       |
 |-----------|------------------------------------------------------------------------------|
-| `PgUp`    | Scroll the focused pane's scroll region up by ~half a screen.                |
+| `PgUp`    | Scroll the focused pane's scroll region up by ~half a screen. On a compact keyboard this is `fn`+`↑`. |
 | `PgDn`    | Scroll back down. At the live tail, PgDn is a no-op.                         |
 | `^O`      | Expand or collapse the truncated code / tool / thinking block in view (or click it). |
 

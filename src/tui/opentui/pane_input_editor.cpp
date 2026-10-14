@@ -25,6 +25,19 @@ constexpr int kBracketedPasteEvent = 0x100;
 
 constexpr std::uint8_t kWrapWord = 2;
 
+// First CSI field of a `~` sequence: "5", "5;2", "6;5:1" → page direction.
+// macOS fn+Up is Page Up (`5~`); a modifier appends `;N` and must still scroll.
+int tilde_page_direction(std::string_view params) {
+    const auto semi = params.find(';');
+    std::string_view key = (semi == std::string_view::npos)
+        ? params : params.substr(0, semi);
+    const auto colon = key.find(':');
+    if (colon != std::string_view::npos) key = key.substr(0, colon);
+    if (key == "5") return -1;
+    if (key == "6") return 1;
+    return 0;
+}
+
 constexpr std::uint32_t kAttrBold = 1u << 0;
 
 void draw_plain_text(OpenTuiHandle frame,
@@ -278,10 +291,24 @@ int PaneInputEditor::read_key_event() {
                     // terminal ever honors our attempts to turn the protocol
                     // off (see kitty_key_decode.h).
                     if (auto legacy = decode_kitty_csi_u(params)) return *legacy;
-                    continue;
+                    // fn+Up / fn+Down are Page Up / Page Down. Map them onto
+                    // the same `~` path as a legacy report.
+                    if (const auto nav = decode_kitty_nav(params)) {
+                        final = '~';
+                        params = (*nav == KittyNav::PageUp) ? "5" : "6";
+                    } else {
+                        continue;
+                    }
                 }
-                std::lock_guard<std::mutex> lk(mu_);
-                handle_csi(final, params);
+                // Page Up/Down scroll after mu_ is released. The frame pump
+                // takes layout_mu and then mu_; calling the scroll handler
+                // while mu_ is held deadlocks the session (fn+Up / PgUp).
+                int page_dir = 0;
+                {
+                    std::lock_guard<std::mutex> lk(mu_);
+                    page_dir = handle_csi(final, params);
+                }
+                if (page_dir != 0) apply_page_scroll(page_dir);
             }
             continue;
         }
@@ -303,7 +330,7 @@ int PaneInputEditor::read_key_event() {
                 if (final == 'A' || final == 'B' || final == 'C' || final == 'D'
                     || final == 'H' || final == 'F') {
                     std::lock_guard<std::mutex> lk(mu_);
-                    handle_csi(final, "");
+                    (void)handle_csi(final, "");
                     continue;
                 }
             }
@@ -906,7 +933,19 @@ void PaneInputEditor::tab_complete() {
     }
 }
 
-void PaneInputEditor::handle_csi(char final, const std::string& params) {
+void PaneInputEditor::apply_page_scroll(int direction) {
+    if (direction == 0) return;
+    ScrollHandler handler;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        handler = scroll_handler_;
+    }
+    if (!handler) return;
+    const int step = std::max(1, tui_.scroll_region_rows() / 2);
+    handler(direction, step);
+}
+
+int PaneInputEditor::handle_csi(char final, const std::string& params) {
     // Palette owns Up/Down while open; other nav keys are ignored so the
     // overlay doesn't fight the buffer underneath it.
     if (palette_active_) {
@@ -919,35 +958,29 @@ void PaneInputEditor::handle_csi(char final, const std::string& params) {
                 palette_sel_ + 1);
             request_present();
         }
-        return;
+        return 0;
     }
     // Arrow/nav keys during reverse-i-search accept the current match and
     // then apply normally (readline behavior).
     if (rsearch_active_) rsearch_end(true);
     if (params.empty()) {
         switch (final) {
-            case 'A': history_prev(); return;
-            case 'B': history_next(); return;
-            case 'C': cursor_right(); return;
-            case 'D': cursor_left();  return;
-            case 'H': cursor_home();  return;
-            case 'F': cursor_end();   return;
+            case 'A': history_prev(); return 0;
+            case 'B': history_next(); return 0;
+            case 'C': cursor_right(); return 0;
+            case 'D': cursor_left();  return 0;
+            case 'H': cursor_home();  return 0;
+            case 'F': cursor_end();   return 0;
         }
     } else if (final == '~') {
-        if (params == "1" || params == "7") { cursor_home(); return; }
-        if (params == "3")                  { delete_char_at_cursor(); return; }
-        if (params == "4" || params == "8") { cursor_end(); return; }
-        if (params == "5" && scroll_handler_) {
-            int step = std::max(1, tui_.scroll_region_rows() / 2);
-            scroll_handler_(-1, step);
-            return;
-        }
-        if (params == "6" && scroll_handler_) {
-            int step = std::max(1, tui_.scroll_region_rows() / 2);
-            scroll_handler_(+1, step);
-            return;
-        }
+        if (params == "1" || params == "7") { cursor_home(); return 0; }
+        if (params == "3")                  { delete_char_at_cursor(); return 0; }
+        if (params == "4" || params == "8") { cursor_end(); return 0; }
+        // Home/End with a modifier (`1;2H` is not `~`). Page Up/Down keep
+        // their key number in the first field (`5`, `5;2`, `6;5`).
+        if (const int dir = tilde_page_direction(params)) return dir;
     }
+    return 0;
 }
 
 bool PaneInputEditor::read_line(const std::string& prompt, std::string& out) {

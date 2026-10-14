@@ -136,7 +136,11 @@ private:
     void discard_string_terminated();
     static bool is_terminal_response_csi(const std::string& params, char final);
 
-    void handle_csi(char final, const std::string& params);
+    // Editor navigation. Returns -1 / +1 when the sequence is Page Up / Page
+    // Down; the caller scrolls after releasing mu_. Returns 0 otherwise.
+    // Caller holds mu_.
+    int handle_csi(char final, const std::string& params);
+    void apply_page_scroll(int direction);
 
     void bind_viewport(const TUI& tui, int content_width) const;
     // Theme prompt width. Caller holds mu_.
