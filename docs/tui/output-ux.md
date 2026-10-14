@@ -9,7 +9,7 @@ Live order within a turn (tools appear as `/cmd` lines are dispatched, after
 the model stream that emitted them):
 
 ```
-▌ › submit text…                           UserEchoSegment (rail + ›, word wrap)
+› submit text…                              UserEchoSegment (› and text in that color)
                                   ← one blank row
 ╭── researcher thought ───╮                ThinkingSegment (when provider emits)
 │  markdown body…         │                one wrapped preview row when collapsed
@@ -34,7 +34,7 @@ assistant prose / markdown / code / diffs  (writ lines swallowed)
 
 | Layer | Segment | Notes |
 |-------|---------|-------|
-| User | `UserEchoSegment` | One-cell accent rail and `›` (ASCII `>`); plain text, wrapped on word boundaries; long pastes collapse to 3 rows |
+| User | `UserEchoSegment` | `›` (ASCII `>`) and the submit text in that color; no block; wrapped on word boundaries; long pastes collapse to 3 rows |
 | Tools | `ToolSegment` | One row per `/cmd`, verb split from the target; success output behind `^O`; a failure always shows one `ERR:` line |
 | Reasoning | `ThinkingSegment` | Rounded box titled with the agent id (that agent's color) plus a dim `thought`; one preview row; `^O` expands |
 | Assistant | `Prose` / `Code` / `Diff` | Same StreamRenderer path as before |

@@ -1361,14 +1361,13 @@ void PaneScrollView::UserEchoSegment::draw(OpenTuiHandle frame,
 
     auto draw_body_row = [&](const StyledLine& line, bool first) -> bool {
         return emit([&](int yy, int /*src*/) {
-            fill_rect(frame, x, yy, 1, 1, rail);
             if (first) {
-                draw_text(frame, x + 1, yy, prompt_mark(), rail, bg);
+                draw_text(frame, x, yy, prompt_mark(), rail, bg);
             }
             if (line.text.empty()) return;
             const std::string chunk = trim_to_cells(line.text, body_cols);
             if (chunk.empty()) return;
-            draw_text(frame, text_x, yy, chunk, d.text.primary, bg);
+            draw_text(frame, text_x, yy, chunk, rail, bg);
         });
     };
 
