@@ -61,29 +61,30 @@ void apply_base_style(StyledLine& line, StyleId base);
                                               StyleId detail_style = StyleId::System,
                                               std::size_t detail_max = 120);
 
-// Intent classify/route: applied → `↗ research · heuristic`; hint-only →
-// `· intent research · hint:agent` (warning). Unknown/empty kinds return nullopt
-// so callers can stay quiet (same contract as gate_continue).
+// Intent classify/route. Applied uses the intent-applied glyph
+// (`→ research · heuristic` in unicode). Hint-only uses the hint glyph
+// (`· intent research · hint:agent`, warning). Unknown/empty kinds return
+// nullopt so callers can stay quiet (same contract as gate_continue).
 [[nodiscard]] std::optional<StyledLine> styled_intent_event_line(
     std::string_view kind,
     std::string_view source,
     std::string_view target_agent,
     bool applied);
 
-// Advisor consult (`◇ advise · agent`): softest supervision chrome.
+// Advisor consult (◆ advise · agent): softest supervision chrome.
 [[nodiscard]] StyledLine styled_advisor_consult_line(std::string_view agent_id,
                                                      std::string_view detail);
 
-// Gate redirect (`↻ redirect · agent`): warning + guidance detail.
+// Gate redirect (↺ redirect · agent): warning + guidance detail.
 [[nodiscard]] StyledLine styled_advisor_redirect_line(std::string_view agent_id,
                                                       std::string_view detail);
 
-// Gate halt / budget exhaustion (`× halt · agent`): error. Prefer this over a
+// Gate halt / budget exhaustion (■ halt · agent): error. Prefer this over a
 // second activity line when both advisor gate_halt and escalation fire.
 [[nodiscard]] StyledLine styled_advisor_halt_line(std::string_view agent_id,
                                                   std::string_view reason);
 
-// Always-on presence CONTEXT (`◎ presence · watcher`): note injected into
+// Always-on presence CONTEXT (↳ presence · watcher): note injected into
 // a peer's in-flight turn. SILENT reviews stay quiet (no scrollback line).
 [[nodiscard]] StyledLine styled_presence_line(std::string_view watcher_id,
                                               std::string_view detail);

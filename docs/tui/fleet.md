@@ -2,7 +2,7 @@
 
 The fleet pane is a live tree of every agent turn in the current job — master, `/agent` / `/parallel` children, and reconcile JIT workers. It consumes the existing [fleet streaming](../concepts/fleet-streaming.md) SSE model (`stream_id` + `depth`); it is not a second orchestrator.
 
-Presence (`◎ presence`) is the opposite lifetime: residents stay in the room. Fleet rows are request-scoped and go away when the job ends (JIT clones disappear on `agent.teardown`).
+Presence (`↳ presence`) is the opposite lifetime: residents stay in the room. Fleet rows are request-scoped and go away when the job ends (JIT clones disappear on `agent.teardown`).
 
 ## When it appears
 
@@ -26,8 +26,8 @@ When both Fleet and Session want the rail (single pane, wide terminal, a job is 
 ```
 
 - **Indent** follows `depth` (0 master, 1 delegated, 2 sub-sub). The depth cap is 2; the tree does not invent a third level.
-- **Status:** `●` running, `✓` ok, `✗` failed, `○` opened but not yet started.
-- **Name** of the agent. Reconcile JIT workers get a `◇` marker (ephemeral clone).
+- **Status:** `●` running, `○` not started, `◌` waiting, `✓` ok, `✗` failed, `⊘` cancelled. Colour follows that state.
+- **Name** of the agent. Reconcile JIT workers get a `◇` marker (ephemeral clone). `ARBITER_GLYPHS=ascii` swaps these for the ASCII-safe set (`*`, `-`, `~`, `+`, `x`, `/`, `^`).
 - **Active tool** while a `/cmd` is in flight; otherwise **token totals** for that stream.
 
 The overlay at the top is reconcile-only: `mode=ensure` residual vs held clause counts and the current wave, next to spawn/teardown rows. The pane does not run reconcile (that is still `POST /v1/reconcile`); it only displays events.

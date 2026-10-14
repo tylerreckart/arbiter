@@ -4,6 +4,7 @@
 #include "markdown.h"
 #include "styled_text.h"
 #include "tui/ansi_util.h"
+#include "tui/glyphs.h"
 #include "tui/opentui/rounded_box.h"
 #include "tui/style_resolver.h"
 #include "tui/tui_design.h"
@@ -1311,8 +1312,7 @@ bool PaneScrollView::ToolSegment::can_expand() const {
 }
 
 std::string PaneScrollView::ToolSegment::status_glyph() const {
-    if (!finished_) return "\u25CB";  // ○ running
-    return ok_ ? "\u2713" : "\u2717"; // ✓ / ✗
+    return glyph_for(run_state_from_tool(finished_, ok_));
 }
 
 std::string PaneScrollView::ToolSegment::header_text() const {
@@ -1381,12 +1381,13 @@ void PaneScrollView::ToolSegment::draw(OpenTuiHandle frame,
     int row = 0;
     const TuiRgba* header_fg = &d.content.system_fg;
     std::uint32_t header_attrs = 0;
-    if (!finished_) {
-        header_fg = &d.accent.info;
-    } else if (ok_) {
-        header_fg = &d.accent.success;
-    } else {
-        header_fg = &d.accent.error;
+    switch (tone_for(run_state_from_tool(finished_, ok_))) {
+    case GlyphTone::Primary: header_fg = &d.accent.primary; break;
+    case GlyphTone::Success: header_fg = &d.accent.success; break;
+    case GlyphTone::Error:   header_fg = &d.accent.error;   break;
+    case GlyphTone::Warning: header_fg = &d.accent.warning; break;
+    case GlyphTone::Info:    header_fg = &d.accent.info;    break;
+    case GlyphTone::Muted:   header_fg = &d.text.muted;     break;
     }
     if (!draw_row(header_text(), *header_fg, header_attrs, row)) return;
 

@@ -4,9 +4,33 @@
 #include "render_policy.h"
 #include "styled_text.h"
 #include "theme.h"
+#include "tui/glyphs.h"
 #include "tui/tui_design.h"
 
+#include <cstdlib>
+#include <string>
+
 using namespace arbiter;
+
+namespace {
+
+struct GlyphModeGuard {
+    std::string prev;
+    bool had = false;
+    explicit GlyphModeGuard(const char* mode) {
+        if (const char* p = std::getenv("ARBITER_GLYPHS")) {
+            had = true;
+            prev = p;
+        }
+        setenv("ARBITER_GLYPHS", mode, 1);
+    }
+    ~GlyphModeGuard() {
+        if (had) setenv("ARBITER_GLYPHS", prev.c_str(), 1);
+        else unsetenv("ARBITER_GLYPHS");
+    }
+};
+
+}  // namespace
 
 TEST_CASE("MarkdownRenderer routes ```diff fences to diff sink") {
     bool called = false;
@@ -425,15 +449,28 @@ TEST_CASE("ANSI loop-log payloads must not go through plain System prose") {
 }
 
 TEST_CASE("markdown task lists render checkbox glyphs") {
+    GlyphModeGuard mode("unicode");
     MarkdownRenderer md;
     auto lines = md.feed_styled("- [ ] open item\n- [x] done item\n");
     auto rest = md.flush_styled();
     lines.insert(lines.end(), rest.begin(), rest.end());
     REQUIRE(lines.size() >= 2);
     CHECK(lines[0].text.find("open item") != std::string::npos);
-    CHECK(lines[0].text.find("\u2610") != std::string::npos);  // ☐
+    CHECK(lines[0].text.find("\u25A1") != std::string::npos);  // □
     CHECK(lines[1].text.find("done item") != std::string::npos);
-    CHECK(lines[1].text.find("\u2611") != std::string::npos);  // ☑
+    CHECK(lines[1].text.find("\u25A0") != std::string::npos);  // ■
+}
+
+TEST_CASE("markdown task lists use ascii boxes when ARBITER_GLYPHS=ascii") {
+    GlyphModeGuard mode("ascii");
+    MarkdownRenderer md;
+    auto lines = md.feed_styled("- [ ] open item\n- [x] done item\n");
+    auto rest = md.flush_styled();
+    lines.insert(lines.end(), rest.begin(), rest.end());
+    REQUIRE(lines.size() >= 2);
+    CHECK(lines[0].text.find("[ ]") != std::string::npos);
+    CHECK(lines[1].text.find("[x]") != std::string::npos);
+    CHECK(lines[0].text.find("\u25A1") == std::string::npos);
 }
 
 TEST_CASE("markdown nested numbered lists keep indent") {
@@ -450,6 +487,7 @@ TEST_CASE("markdown nested numbered lists keep indent") {
 }
 
 TEST_CASE("styled_activity_line and interim header helpers") {
+    GlyphModeGuard mode("unicode");
     auto act = styled_activity_line("[interrupted]", StyleId::Error);
     CHECK(act.text.find("\u00b7 ") == 0);
     CHECK(act.text.find("[interrupted]") != std::string::npos);
@@ -460,9 +498,10 @@ TEST_CASE("styled_activity_line and interim header helpers") {
 }
 
 TEST_CASE("styled_intent_event_line uses routing glyphs") {
+    GlyphModeGuard mode("unicode");
     auto applied = styled_intent_event_line("research", "heuristic", "research", true);
     REQUIRE(applied);
-    CHECK(applied->text.find("\u2197 ") == 0);  // ↗
+    CHECK(applied->text.find("\u2192 ") == 0);  // →
     CHECK(applied->text.find("research") != std::string::npos);
     CHECK(applied->text.find("heuristic") != std::string::npos);
     CHECK(applied->spans[0].id == StyleId::Info);
@@ -479,33 +518,48 @@ TEST_CASE("styled_intent_event_line uses routing glyphs") {
 }
 
 TEST_CASE("styled_advisor_event lines use distinct glyphs") {
+    GlyphModeGuard mode("unicode");
     auto consult = styled_advisor_consult_line("index", "Should we pin the API?");
-    CHECK(consult.text.find("\u25c7 ") == 0);  // ◇
+    CHECK(consult.text.find("\u25C6 ") == 0);  // ◆
     CHECK(consult.text.find("advise") != std::string::npos);
     CHECK(consult.text.find("index") != std::string::npos);
     CHECK(consult.text.find("pin the API") != std::string::npos);
 
     auto redirect = styled_advisor_redirect_line("research", "Add a failing test first");
-    CHECK(redirect.text.find("\u21bb ") == 0);  // ↻
+    CHECK(redirect.text.find("\u21BA ") == 0);  // ↺
     CHECK(redirect.text.find("redirect") != std::string::npos);
     CHECK(redirect.spans[0].id == StyleId::Warning);
 
     auto halt = styled_advisor_halt_line("research", "incomplete without verification");
-    CHECK(halt.text.find("\u00d7 ") == 0);  // ×
+    CHECK(halt.text.find("\u25A0 ") == 0);  // ■
     CHECK(halt.text.find("halt") != std::string::npos);
     CHECK(halt.spans[0].id == StyleId::Error);
 }
 
-TEST_CASE("styled_presence_line uses bullseye glyph") {
+TEST_CASE("styled_presence_line uses an aside glyph") {
+    GlyphModeGuard mode("unicode");
     auto line = styled_presence_line("jules", "Scout already fetched the v2 contract.");
-    CHECK(line.text.find("\u25ce ") == 0);  // ◎
+    CHECK(line.text.find("\u21B3 ") == 0);  // ↳
     CHECK(line.text.find("presence") != std::string::npos);
     CHECK(line.text.find("jules") != std::string::npos);
     CHECK(line.text.find("v2 contract") != std::string::npos);
     CHECK(line.spans[0].id == StyleId::Info);
 }
 
+TEST_CASE("ascii glyph mode rewrites event prefixes") {
+    GlyphModeGuard mode("ascii");
+    auto applied = styled_intent_event_line("research", "heuristic", "research", true);
+    REQUIRE(applied);
+    CHECK(applied->text.find("-> ") == 0);
+    CHECK(styled_presence_line("jules", "note").text.find(">> ") == 0);
+    CHECK(styled_advisor_halt_line("research", "stop").text.find("!! ") == 0);
+    CHECK(styled_advisor_redirect_line("research", "go").text.find("<> ") == 0);
+    CHECK(styled_advisor_consult_line("index", "q").text.find("? ") == 0);
+    CHECK(styled_delegation_line("/agent scout").text.find("-> ") == 0);
+}
+
 TEST_CASE("styled_delegation_line highlights routing status") {
+    GlyphModeGuard mode("unicode");
     auto line = styled_delegation_line("/agent scout GOAL: dig");
     CHECK(line.text.find("\u2192 ") == 0);
     CHECK(line.text.find("delegating") != std::string::npos);

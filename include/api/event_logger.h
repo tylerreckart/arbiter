@@ -4,6 +4,7 @@
 // Mirrors SSE events to stderr for operators running `arbiter --api`.
 
 #include "json.h"
+#include "tui/glyphs.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -139,18 +140,22 @@ public:
                 value << quote_short(detail.empty() ? preview : detail, 80);
             } else if (kind == "gate_continue") {
                 clr = kBoldYellow;
-                value << "verdict: continue " << color(kGreen) << "✓" << reset();
+                value << "verdict: continue " << color(kGreen)
+                      << glyphs().succeeded << reset();
             } else if (kind == "gate_redirect") {
                 clr = kBoldYellow;
-                value << "verdict: redirect " << color(kYellow) << "↻" << reset();
+                value << "verdict: redirect " << color(kYellow)
+                      << glyphs().advisor_redirect << reset();
                 if (!detail.empty()) value << "  " << quote_short(detail, 60);
             } else if (kind == "gate_halt") {
                 clr = kBoldRed;
-                value << "verdict: halt " << color(kBoldRed) << "✗" << reset();
+                value << "verdict: halt " << color(kBoldRed)
+                      << glyphs().advisor_halt << reset();
                 if (!detail.empty()) value << "  " << quote_short(detail, 60);
             } else if (kind == "gate_budget") {
                 clr = kBoldRed;
-                value << "verdict: budget " << color(kBoldRed) << "⛔" << reset();
+                value << "verdict: budget " << color(kBoldRed)
+                      << glyphs().advisor_halt << reset();
             } else {
                 value << kind << " " << detail;
             }
@@ -353,7 +358,7 @@ private:
                              const std::string& message) {
         std::ostringstream line;
         line << color(kBold) << "arbiter "
-             << color(kDim) << "↗" << reset()
+             << color(kDim) << glyphs().handoff << reset()
              << color(kBold) << " " << method << " " << path << reset();
         std::fputs(line.str().c_str(), stderr);
         std::fputc('\n', stderr);

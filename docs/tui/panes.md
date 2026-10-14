@@ -27,7 +27,7 @@ Splitting twice in the same orientation does **not** wrap a new node — the new
 
 Exactly one pane is focused at any moment. The focused pane's bottom border draws with an accent colour and owns the readline; inactive panes are content-only (no input box). Stacked gutters are a single separator cell — the same spacing as vertical splits.
 
-Unfocused panes show a small activity badge on the mid-separator when a turn is running (`●`) or when a turn completes while you were elsewhere (`✓` / `✗`). The badge clears when you focus that pane.
+Unfocused panes show a small activity badge on the mid-separator while a turn is running or new output arrives (`•`) and when a turn completes while you were elsewhere (`✓` / `✗`). Colour comes from that state. The badge clears when you focus that pane. `ARBITER_GLYPHS=ascii` uses `*`, `+`, and `x`.
 
 PgUp/PgDn scroll the **focused** pane. Esc cancels the **focused** pane's in-flight turn — siblings keep streaming.
 

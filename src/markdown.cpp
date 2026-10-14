@@ -5,6 +5,7 @@
 #include "render_policy.h"
 #include "styled_text.h"
 #include "theme.h"
+#include "tui/glyphs.h"
 
 #include <cctype>
 #include <cstring>
@@ -563,7 +564,8 @@ std::optional<StyledLine> MarkdownRenderer::process_line_styled(const std::strin
             if (is_task) {
                 styled_append(bullet_line,
                               task_done ? StyleId::Success : StyleId::Dim,
-                              task_done ? "\u2611 " : "\u2610 ");  // ☑ / ☐
+                              std::string(task_done ? glyphs().task_done
+                                                    : glyphs().task_todo) + " ");
                 const size_t text_at = (after_bullet + 3 < line.size() &&
                                         line[after_bullet + 3] == ' ')
                     ? after_bullet + 4

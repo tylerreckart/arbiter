@@ -1,6 +1,7 @@
 #include "tui/fleet.h"
 
 #include "styled_text.h"
+#include "tui/glyphs.h"
 #include "tui/sidebar_format.h"
 
 #include <algorithm>
@@ -44,19 +45,18 @@ int array_len(const JsonValue& payload, const std::string& key) {
 }
 
 std::string status_glyph(const FleetNode& n) {
-    if (n.running) return "\u25CF";          // ●
-    if (n.ended && n.ok) return "\u2713";    // ✓
-    if (n.ended && !n.ok) return "\u2717";   // ✗
-    return "\u25CB";                         // ○ pending
+    return glyph_for(fleet_node_status(n));
 }
 
 std::string tree_prefix(int depth, bool last_sibling, bool parent_last) {
     if (depth <= 0) return {};
+    const GlyphSet& g = glyphs();
     std::string p;
     if (depth >= 2) {
-        p += parent_last ? "  " : "\u2502 ";  // │
+        p += parent_last ? "  " : std::string(g.tree_vert) + " ";
     }
-    p += last_sibling ? "\u2514 " : "\u251C ";  // └  ├
+    p += last_sibling ? g.tree_last : g.tree_branch;
+    p += " ";
     return p;
 }
 
@@ -71,11 +71,19 @@ std::string format_fleet_row(const FleetNode& node,
     line += status_glyph(node);
     line += " ";
     std::string name = node.agent.empty() ? "?" : node.agent;
-    if (node.ephemeral) name += " \u25C7";  // ◇ JIT marker
+    if (node.ephemeral) {
+        name += " ";
+        name += glyphs().jit;
+    }
     line += name;
 
     std::string tail;
-    if (!node.active_tool.empty() && node.running) {
+    const RunState st = fleet_node_status(node);
+    if (st == RunState::Waiting) {
+        if (node.blocked_on.empty()) tail = "waiting";
+        else if (node.blocked_on.find(' ') != std::string::npos) tail = node.blocked_on;
+        else tail = "waiting on " + node.blocked_on;
+    } else if (!node.active_tool.empty() && node.running) {
         tail = node.active_tool;
     } else {
         const int tok = node.input_tokens + node.output_tokens;
@@ -227,6 +235,9 @@ void FleetTree::on_stream_start(const std::string& agent,
     n->running = true;
     n->ended = false;
     n->ok = true;
+    n->waiting = false;
+    n->cancelled = false;
+    n->blocked_on.clear();
     n->active_tool.clear();
     if (n->parent_stream_id < 0) n->parent_stream_id = infer_parent_locked(depth);
     if (!request_id_.empty()) n->request_id = request_id_;
@@ -245,6 +256,8 @@ void FleetTree::on_agent_start(const std::string& agent,
         fresh.agent = agent;
         fresh.depth = clamp_depth(depth);
         fresh.running = true;
+        fresh.waiting = false;
+        fresh.cancelled = false;
         fresh.parent_stream_id = infer_parent_locked(fresh.depth);
         fresh.request_id = request_id_;
         nodes_.push_back(std::move(fresh));
@@ -253,6 +266,9 @@ void FleetTree::on_agent_start(const std::string& agent,
     if (!agent.empty()) n->agent = agent;
     n->running = true;
     n->ended = false;
+    n->waiting = false;
+    n->cancelled = false;
+    n->blocked_on.clear();
 }
 
 void FleetTree::on_text(int stream_id) {
@@ -260,6 +276,9 @@ void FleetTree::on_text(int stream_id) {
     if (auto* n = find_stream_locked(stream_id)) {
         n->running = true;
         n->ended = false;
+        n->waiting = false;
+        n->cancelled = false;
+        n->blocked_on.clear();
     }
 }
 
@@ -271,6 +290,9 @@ void FleetTree::on_tool_call(int stream_id, const std::string& tool, bool starte
         n->active_tool = tool;
         n->running = true;
         n->ended = false;
+        n->waiting = false;
+        n->cancelled = false;
+        n->blocked_on.clear();
     } else if (n->active_tool == tool || n->active_tool.empty()) {
         n->active_tool.clear();
     }
@@ -285,13 +307,41 @@ void FleetTree::on_token_usage(int stream_id, int input_tokens, int output_token
 }
 
 void FleetTree::on_stream_end(int stream_id, bool ok) {
+    on_stream_end(stream_id, ok ? Terminal::Ok : Terminal::Failed);
+}
+
+void FleetTree::on_stream_end(int stream_id, Terminal how) {
     std::lock_guard<std::mutex> lk(mu_);
     auto* n = find_stream_locked(stream_id);
     if (!n) return;
     n->running = false;
+    n->waiting = false;
     n->ended = true;
-    n->ok = ok;
     n->active_tool.clear();
+    n->blocked_on.clear();
+    switch (how) {
+    case Terminal::Ok:
+        n->ok = true;
+        n->cancelled = false;
+        break;
+    case Terminal::Failed:
+        n->ok = false;
+        n->cancelled = false;
+        break;
+    case Terminal::Cancelled:
+        n->ok = false;
+        n->cancelled = true;
+        break;
+    }
+}
+
+void FleetTree::on_waiting(int stream_id, const std::string& blocked_on) {
+    std::lock_guard<std::mutex> lk(mu_);
+    auto* n = find_stream_locked(stream_id);
+    if (!n || n->ended || n->cancelled) return;
+    n->waiting = true;
+    n->running = false;
+    n->blocked_on = blocked_on;
 }
 
 void FleetTree::on_agent_spawned(const std::string& agent,
@@ -315,6 +365,8 @@ void FleetTree::on_agent_spawned(const std::string& agent,
         existing->ephemeral = true;
         existing->running = true;
         existing->ended = false;
+        existing->waiting = false;
+        existing->cancelled = false;
         existing->clauses = clauses;
         return;
     }
@@ -374,8 +426,16 @@ void FleetTree::on_reconcile_progress(const std::string& phase,
 void FleetTree::on_done() {
     std::lock_guard<std::mutex> lk(mu_);
     for (auto& n : nodes_) {
+        if (n.cancelled) {
+            n.running = false;
+            n.waiting = false;
+            n.ended = true;
+            n.active_tool.clear();
+            continue;
+        }
         if (!n.ended) {
             n.running = false;
+            n.waiting = false;
             n.ended = true;
         }
         n.active_tool.clear();
@@ -446,7 +506,20 @@ void FleetTree::ingest_sse(const std::string& event, const JsonValue& payload) {
         return;
     }
     if (event == "stream_end") {
-        on_stream_end(sid, payload.get_bool("ok", true));
+        const std::string status = payload.get_string("status");
+        if (status == "cancelled" || payload.get_bool("cancelled", false)) {
+            on_stream_end(sid, Terminal::Cancelled);
+        } else if (status == "failed") {
+            on_stream_end(sid, Terminal::Failed);
+        } else if (status == "ok") {
+            on_stream_end(sid, Terminal::Ok);
+        } else {
+            on_stream_end(sid, payload.get_bool("ok", true));
+        }
+        return;
+    }
+    if (event == "agent_wait" || event == "stream_wait") {
+        if (sid >= 0) on_waiting(sid, payload.get_string("on"));
         return;
     }
     if (event == "agent.spawned") {
@@ -501,7 +574,7 @@ bool FleetTree::empty() const {
 bool FleetTree::has_live() const {
     std::lock_guard<std::mutex> lk(mu_);
     for (const auto& n : nodes_) {
-        if (n.running && !n.ended) return true;
+        if (!n.ended && (n.running || n.waiting)) return true;
     }
     return overlay_.active && !overlay_.empty && overlay_.mode == "ensure";
 }
@@ -642,6 +715,9 @@ std::vector<FleetPaintRow> FleetTree::paint_rows(int max_cells) const {
         row.running = n.running;
         row.ended = n.ended;
         row.ok = n.ok;
+        row.waiting = n.waiting;
+        row.cancelled = n.cancelled;
+        row.status = fleet_node_status(n);
         row.conversation_id = n.conversation_id;
         row.pane_agent = n.pane_agent.empty() ? n.agent : n.pane_agent;
         row.line = format_fleet_row(n, last_sibling(u), parent_last(u), max_cells);

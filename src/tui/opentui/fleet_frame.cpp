@@ -1,5 +1,7 @@
 #include "tui/opentui/fleet_frame.h"
 
+#include "tui/glyphs.h"
+
 #include "styled_text.h"
 #include "tui/opentui/engine.h"
 #include "tui/opentui/rounded_box.h"
@@ -135,9 +137,11 @@ void draw_fleet_sidebar(OpenTuiHandle frame,
         const auto& row = snap.rows[static_cast<size_t>(idx)];
         const bool selected = snap.focused && idx == sel;
         const TuiRgba row_bg = selected ? d.bg.status : bg;
-        const TuiRgba& fg = row.running ? d.accent.primary
-                          : (row.ended && !row.ok) ? d.accent.error
-                          : (row.ended) ? d.accent.success
+        const TuiRgba& fg = row.status == RunState::Running   ? d.accent.primary
+                          : row.status == RunState::Waiting   ? d.accent.warning
+                          : row.status == RunState::Succeeded ? d.accent.success
+                          : row.status == RunState::Failed    ? d.accent.error
+                          : row.status == RunState::Cancelled ? sc.label
                           : sc.body;
         if (selected) {
             bufferFillRect(frame,

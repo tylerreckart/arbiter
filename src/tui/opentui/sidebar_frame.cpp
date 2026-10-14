@@ -1,5 +1,7 @@
 #include "tui/opentui/sidebar_frame.h"
 
+#include "tui/glyphs.h"
+
 #include "styled_text.h"
 #include "tui/opentui/engine.h"
 #include "tui/opentui/rounded_box.h"
@@ -125,16 +127,19 @@ int draw_tool_list(OpenTuiHandle frame,
     const int shown = std::min(max_rows, static_cast<int>(entries.size()));
     for (int i = 0; i < shown; ++i) {
         const auto& e = entries[static_cast<size_t>(i)];
-        const TuiRgba& mark_fg = e.ok ? d.accent.success : d.accent.error;
-        const char* mark = e.ok ? "\u2713" : "\u2717";
+        const RunState st = e.ok ? RunState::Succeeded : RunState::Failed;
+        const TuiRgba& mark_fg = tone_for(st) == GlyphTone::Success
+            ? d.accent.success : d.accent.error;
+        const char* mark = glyph_for(st);
+        const int mark_w = std::max(1, cell_width(mark));
         draw_text(frame,
                   static_cast<std::uint32_t>(content_x),
                   static_cast<std::uint32_t>(row),
                   mark,
                   mark_fg,
                   bg);
-        const int name_x = content_x + 2;
-        const int name_w = std::max(0, content_w - 2);
+        const int name_x = content_x + mark_w + 1;
+        const int name_w = std::max(0, content_w - mark_w - 1);
         draw_text(frame,
                   static_cast<std::uint32_t>(name_x),
                   static_cast<std::uint32_t>(row),
@@ -160,14 +165,15 @@ int draw_todo_list(OpenTuiHandle frame,
     const int shown = std::min(max_rows, static_cast<int>(entries.size()));
     for (int i = 0; i < shown; ++i) {
         const auto& t = entries[static_cast<size_t>(i)];
-        const bool done = (t.status == "completed");
-        const bool active = (t.status == "in_progress");
-        const TuiRgba& mark_fg = done   ? d.accent.success
-                               : active ? d.accent.warning
-                                        : sc.label;
-        const char* mark = done   ? "\u2713"   // ✓
-                         : active ? "\u25CF"   // ●
-                                  : "\u25CB";  // ○
+        const RunState st = run_state_from_todo(t.status.c_str());
+        const GlyphTone tone = tone_for(st);
+        const TuiRgba& mark_fg = tone == GlyphTone::Success ? d.accent.success
+                               : tone == GlyphTone::Primary ? d.accent.primary
+                               : tone == GlyphTone::Warning ? d.accent.warning
+                               : tone == GlyphTone::Error   ? d.accent.error
+                                                            : sc.label;
+        const char* mark = glyph_for(st);
+        const int mark_w = std::max(1, cell_width(mark));
         draw_text(frame,
                   static_cast<std::uint32_t>(content_x),
                   static_cast<std::uint32_t>(row),
@@ -176,10 +182,11 @@ int draw_todo_list(OpenTuiHandle frame,
                   bg);
         // Ids stay internal for /todo commands — end-users only see the title.
         draw_text(frame,
-                  static_cast<std::uint32_t>(content_x + 2),
+                  static_cast<std::uint32_t>(content_x + mark_w + 1),
                   static_cast<std::uint32_t>(row),
-                  trim_to_cells(t.subject, std::max(0, content_w - 2)),
-                  done ? sc.label : sc.body,
+                  trim_to_cells(t.subject, std::max(0, content_w - mark_w - 1)),
+                  (st == RunState::Succeeded || st == RunState::Cancelled)
+                      ? sc.label : sc.body,
                   bg);
         ++row;
     }
@@ -200,8 +207,10 @@ int draw_schedule_list(OpenTuiHandle frame,
     const int shown = std::min(max_rows, static_cast<int>(entries.size()));
     for (int i = 0; i < shown; ++i) {
         const auto& s = entries[static_cast<size_t>(i)];
-        const TuiRgba& mark_fg = (s.status == "paused") ? sc.label : d.accent.primary;
-        const char* mark = (s.status == "paused") ? "\u2016" : "\u23f1";
+        const bool paused = s.status == "paused";
+        const TuiRgba& mark_fg = paused ? sc.label : d.accent.primary;
+        const char* mark = paused ? glyphs().paused : glyphs().scheduled;
+        const int mark_w = std::max(1, cell_width(mark));
         draw_text(frame,
                   static_cast<std::uint32_t>(content_x),
                   static_cast<std::uint32_t>(row),
@@ -210,9 +219,9 @@ int draw_schedule_list(OpenTuiHandle frame,
                   bg);
         std::string line = "#" + std::to_string(s.id) + " " + s.phrase;
         draw_text(frame,
-                  static_cast<std::uint32_t>(content_x + 2),
+                  static_cast<std::uint32_t>(content_x + mark_w + 1),
                   static_cast<std::uint32_t>(row),
-                  trim_to_cells(line, std::max(0, content_w - 2)),
+                  trim_to_cells(line, std::max(0, content_w - mark_w - 1)),
                   sc.value,
                   bg);
         ++row;
@@ -234,17 +243,19 @@ int draw_loop_list(OpenTuiHandle frame,
     const int shown = std::min(max_rows, static_cast<int>(entries.size()));
     for (int i = 0; i < shown; ++i) {
         const auto& l = entries[static_cast<size_t>(i)];
+        const char* mark = glyphs().loop;
+        const int mark_w = std::max(1, cell_width(mark));
         draw_text(frame,
                   static_cast<std::uint32_t>(content_x),
                   static_cast<std::uint32_t>(row),
-                  "\u21bb",
+                  mark,
                   d.accent.warning,
                   bg);
         std::string line = l.id + " " + l.agent_id + " i" + std::to_string(l.iter);
         draw_text(frame,
-                  static_cast<std::uint32_t>(content_x + 2),
+                  static_cast<std::uint32_t>(content_x + mark_w + 1),
                   static_cast<std::uint32_t>(row),
-                  trim_to_cells(line, std::max(0, content_w - 2)),
+                  trim_to_cells(line, std::max(0, content_w - mark_w - 1)),
                   sc.value,
                   bg);
         ++row;

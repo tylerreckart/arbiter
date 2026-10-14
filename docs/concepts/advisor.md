@@ -111,14 +111,14 @@ The consult path doesn't constrain the executor — it's an affordance, not a ga
 
 | Event | Chrome |
 |-------|--------|
-| `consult` | Soft `◇ advise · <agent> <question>` |
+| `consult` | Soft `◆ advise · <agent> <question>` |
 | `gate_continue` | Quiet (no scrollback line) |
-| `gate_redirect` | Warning `↻ redirect · <agent> <guidance>` |
-| `gate_halt` / `gate_budget` | Error `× halt · <agent> <reason>` once via the escalation path (advisor event itself is not double-painted) |
+| `gate_redirect` | Warning `↺ redirect · <agent> <guidance>` |
+| `gate_halt` / `gate_budget` | Error `■ halt · <agent> <reason>` once via the escalation path (advisor event itself is not double-painted) |
 
-Presence `CONTEXT` notes use a separate glyph (`◎ presence · <watcher>`). See [Presence](presence.md).
+Presence `CONTEXT` notes use a separate glyph (`↳ presence · <watcher>`). See [Presence](presence.md).
 
-Same glyph dialect as consult/redirect (`◇` / `↻`); halt uses text `×` (not emoji, distinct from tool-fail `✗`). Distinct from `·` system activity and from `→ delegating:`.
+Consult, redirect, and halt use ◆ / ↺ / ■ so they don't share marks with JIT agents (◇), loops (↻), or a failed tool (✗). Distinct from `·` system activity and from `→ delegating:`. `ARBITER_GLYPHS=ascii` uses `?`, `<>`, and `!!`.
 
 ## See also
 

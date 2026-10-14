@@ -1,4 +1,5 @@
 #include "tui/spinner.h"
+#include "tui/glyphs.h"
 
 #include <chrono>
 #include <string>
@@ -46,11 +47,33 @@ std::int64_t steady_ms() {
 } // namespace
 
 std::string_view spinner_frame() {
+    if (glyph_mode() == GlyphMode::Ascii) {
+        static constexpr const char* kAsciiFrames[] = {"|", "/", "-", "\\"};
+        const int i = static_cast<int>((steady_ms() / 80) % 4);
+        return kAsciiFrames[i];
+    }
     const int i = static_cast<int>((steady_ms() / kBraillePeriodMs) % kBrailleFrameCount);
     return kBrailleFrames[i];
 }
 
 std::string_view wait_phrase() {
+    if (glyph_mode() == GlyphMode::Ascii) {
+        static constexpr const char* kAsciiPhrases[] = {
+            "Working...",
+            "Looking into that...",
+            "Thinking it through...",
+            "Digging in...",
+            "One moment...",
+            "On it...",
+            "Figuring this out...",
+            "Taking a look...",
+            "Hang tight...",
+            "Almost there...",
+        };
+        constexpr int n = static_cast<int>(sizeof(kAsciiPhrases) / sizeof(kAsciiPhrases[0]));
+        const int i = static_cast<int>((steady_ms() / kPhrasePeriodMs) % n);
+        return kAsciiPhrases[i];
+    }
     const int i = static_cast<int>((steady_ms() / kPhrasePeriodMs) % kWaitPhraseCount);
     return kWaitPhrases[i];
 }

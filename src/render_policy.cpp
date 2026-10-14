@@ -1,4 +1,5 @@
 #include "render_policy.h"
+#include "tui/glyphs.h"
 
 namespace arbiter {
 
@@ -103,8 +104,9 @@ std::vector<StyledLine> styled_plain_lines(const std::vector<std::string>& rows,
 std::vector<StyledLine> tool_call_summary_lines(int total, int failed) {
     if (total <= 0) return {};
     StyledLine line;
+    const char* mark = failed == 0 ? glyphs().succeeded : glyphs().failed;
     styled_append(line, failed == 0 ? StyleId::Success : StyleId::Error,
-                  failed == 0 ? "\u2713 " : "\u2717 ");
+                  std::string(mark) + " ");
     std::string rest = std::to_string(total) + " tool call";
     if (total != 1) rest += 's';
     if (failed > 0) {
@@ -118,7 +120,7 @@ std::vector<StyledLine> tool_call_summary_lines(int total, int failed) {
 
 StyledLine styled_activity_line(std::string text, StyleId id) {
     StyledLine line;
-    styled_append(line, id, "\u00b7 ");  // ·
+    styled_append(line, id, std::string(glyphs().separator) + " ");
     styled_append(line, id, std::move(text));
     return line;
 }
@@ -139,7 +141,8 @@ void append_agent_suffix(StyledLine& line,
                          std::string_view agent_id,
                          StyleId agent_style) {
     if (agent_id.empty()) return;
-    styled_append(line, StyleId::System, " \u00b7 ");  // ·
+    styled_append(line, StyleId::System,
+                  std::string(" ") + glyphs().separator + " ");
     styled_append(line, agent_style, agent_id);
 }
 
@@ -178,14 +181,15 @@ std::optional<StyledLine> styled_intent_event_line(std::string_view kind,
         // ↗ research · heuristic   (target is the kind when applied; agent
         // name follows as bold identity when present and distinct).
         StyledLine line = styled_runtime_event(
-            "\u2197",  // ↗
+            glyphs().intent_applied,
             StyleId::Info,
             kind,
             StyleId::Bold,
             {},
             StyleId::System);
         if (!source.empty()) {
-            styled_append(line, StyleId::System, " \u00b7 ");
+            styled_append(line, StyleId::System,
+                          std::string(" ") + glyphs().separator + " ");
             styled_append(line, StyleId::Info, source);
         }
         if (!target_agent.empty() && target_agent != kind) {
@@ -201,18 +205,20 @@ std::optional<StyledLine> styled_intent_event_line(std::string_view kind,
     std::string label = "intent ";
     label.append(kind);
     StyledLine line = styled_runtime_event(
-        "\u00b7",  // ·
+        glyphs().intent_hint,
         StyleId::Warning,
         label,
         StyleId::Warning,
         {},
         StyleId::System);
     if (!source.empty()) {
-        styled_append(line, StyleId::System, " \u00b7 ");
+        styled_append(line, StyleId::System,
+                      std::string(" ") + glyphs().separator + " ");
         styled_append(line, StyleId::Warning, source);
     }
     if (!target_agent.empty()) {
-        styled_append(line, StyleId::System, " \u00b7 hint:");
+        styled_append(line, StyleId::System,
+                      std::string(" ") + glyphs().separator + " hint:");
         styled_append(line, StyleId::Warning, target_agent);
     }
     return line;
@@ -221,7 +227,7 @@ std::optional<StyledLine> styled_intent_event_line(std::string_view kind,
 StyledLine styled_advisor_consult_line(std::string_view agent_id,
                                        std::string_view detail) {
     StyledLine line = styled_runtime_event(
-        "\u25c7",  // ◇
+        glyphs().advisor_consult,
         StyleId::System,
         "advise",
         StyleId::System,
@@ -239,7 +245,7 @@ StyledLine styled_advisor_consult_line(std::string_view agent_id,
 StyledLine styled_presence_line(std::string_view watcher_id,
                                std::string_view detail) {
     StyledLine line = styled_runtime_event(
-        "\u25ce",  // ◎
+        glyphs().presence,
         StyleId::Info,
         "presence",
         StyleId::Info,
@@ -257,7 +263,7 @@ StyledLine styled_presence_line(std::string_view watcher_id,
 StyledLine styled_advisor_redirect_line(std::string_view agent_id,
                                         std::string_view detail) {
     StyledLine line = styled_runtime_event(
-        "\u21bb",  // ↻
+        glyphs().advisor_redirect,
         StyleId::Warning,
         "redirect",
         StyleId::Warning,
@@ -275,7 +281,7 @@ StyledLine styled_advisor_redirect_line(std::string_view agent_id,
 StyledLine styled_advisor_halt_line(std::string_view agent_id,
                                     std::string_view reason) {
     StyledLine line = styled_runtime_event(
-        "\u00d7",  // × (text multiply-sign; not emoji, distinct from tool ✗)
+        glyphs().advisor_halt,
         StyleId::Error,
         "halt",
         StyleId::Error,
@@ -292,7 +298,8 @@ StyledLine styled_advisor_halt_line(std::string_view agent_id,
 
 StyledLine styled_interim_header(const std::string& agent_id) {
     StyledLine line;
-    styled_append(line, StyleId::System, "\u2192 ");  // →
+    styled_append(line, StyleId::System,
+                  std::string(glyphs().handoff) + " ");
     styled_append(line, StyleId::System,
                   agent_id.empty() ? "sub-agent" : agent_id);
     return line;
@@ -300,7 +307,8 @@ StyledLine styled_interim_header(const std::string& agent_id) {
 
 StyledLine styled_delegation_line(std::string_view detail) {
     StyledLine line;
-    styled_append(line, StyleId::Info, "\u2192 ");  // →
+    styled_append(line, StyleId::Info,
+                  std::string(glyphs().handoff) + " ");
     styled_append(line, StyleId::Bold, "delegating");
     std::string_view rest = detail;
     while (!rest.empty() && (rest.front() == ' ' || rest.front() == '\t')) {

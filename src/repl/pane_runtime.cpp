@@ -113,7 +113,7 @@ void ReplSession::start_pane_thread(Pane& p_ref) {
                 }
                 if (layout_ptr && &layout_ptr->focused() != &p) {
                     p.activity_unfocused.store(true);
-                    p.tui.set_activity_badge("●");
+                    p.tui.set_activity_badge(ActivityBadgeKind::Pulse);
                 }
                 {
                     ConversationScope scope(p.conversation_id);
@@ -129,7 +129,8 @@ void ReplSession::start_pane_thread(Pane& p_ref) {
                 if (layout_ptr && &layout_ptr->focused() != &p) {
                     if (had_agent_turn) {
                         p.completed_unfocused.store(true);
-                        p.tui.set_activity_badge(ok ? "✓" : "✗");
+                        p.tui.set_activity_badge(ok ? ActivityBadgeKind::Succeeded
+                                                   : ActivityBadgeKind::Failed);
                     }
                 } else {
                     p.completed_unfocused.store(false);
@@ -203,7 +204,7 @@ void ReplSession::start_output_pump() {
                 && !p.turn_running.load()) {
                 p.activity_unfocused.store(true);
                 if (!p.completed_unfocused.load()) {
-                    p.tui.set_activity_badge("●");
+                    p.tui.set_activity_badge(ActivityBadgeKind::Pulse);
                 }
             }
         };

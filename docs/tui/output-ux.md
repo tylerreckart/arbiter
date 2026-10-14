@@ -19,15 +19,15 @@ the model stream that emitted them):
                                   ← one blank row
 assistant prose / markdown / code / diffs  (writ lines swallowed)
                                   ← one blank row
-○ fetch:https://…                          ToolSegment appears as dispatch starts
+● fetch:https://…                          ToolSegment appears as dispatch starts
 ✓ exec:git status                          resolves when the result returns
                                   ← one blank row
 · [interrupted]                            activity chrome (system noise)
-↗ research · heuristic                     intent applied (info; ≠ → delegating)
+→ research · heuristic                     intent applied (info)
 · intent research · hint:research          intent classified, not applied
-◇ advise · index Should we…?               advisor consult (soft)
-↻ redirect · research Add a failing…       advisor gate redirect (warning)
-× halt · research incomplete…             advisor halt (error; once via escalation)
+◆ advise · index Should we…?               advisor consult (soft)
+↺ redirect · research Add a failing…       advisor gate redirect (warning)
+■ halt · research incomplete…              advisor halt (error; once via escalation)
 → delegating: /agent …                     bold/info routing status (not prose)
 › /read #2                                 verbose writs (› + WritLine)
 ```
@@ -39,7 +39,7 @@ assistant prose / markdown / code / diffs  (writ lines swallowed)
 | Reasoning | `ThinkingSegment` | Rounded box titled `thinking`; markdown body; scroll bg + muted border + info title |
 | Assistant | `Prose` / `Code` / `Diff` | Same StreamRenderer path as before |
 | System | styled activity lines | Interrupts, confirm outcomes (`·`) |
-| Runtime | intent / advisor helpers | `↗` applied intent, `◇` advise, `↻` redirect, `×` halt; `→ delegating:` stays separate |
+| Runtime | intent / advisor helpers | `→` applied intent, `◆` advise, `↺` redirect, `■` halt; `→ delegating:` stays a separate line |
 
 Quiet default: writ lines stay swallowed (`BlockParser` covers `/read`, `/browse`,
 `/todo`, `/search`, …); tools appear as compact status rows, not raw `/fetch`

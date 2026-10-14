@@ -7,6 +7,9 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Changed
+- **State glyphs come from one table.** `ARBITER_GLYPHS=unicode` (the default on a UTF-8 locale) is the shape set: ● running, ○ pending, ◌ waiting, ✓ done, ✗ failed, ⊘ cancelled. Advisor consult / redirect / halt are ◆ / ↺ / ■, presence notes are ↳, JIT agents stay ◇, and an unfocused pane's activity badge is • so it no longer looks like a running agent. Schedules use ◷ instead of the wide ⏱. Markdown tasks use □ / ■, the same module as the todo sidebar. `ARBITER_GLYPHS=ascii` (also chosen automatically for `TERM=dumb` or a non-UTF-8 locale) is the ASCII-safe set. A cancelled fleet row is no longer drawn as a failure.
+
 ### Fixed
 - **TUI logs no longer paint over the input line.** While the interactive UI owns the terminal, stderr is appended to `~/.arbiter/tui.log` instead of the tty. That covers `openrouter_response`, `intent_route`, `intent_shadow`, and the other operational `fprintf` / `cerr` writers that were interleaving with the frame.
 - **Fleet pane sizes to its agents.** One row no longer takes about 40% of the right column. The list scrolls after 12 rows; Session, Agent, Todos, and Tools keep the remaining height.
