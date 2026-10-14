@@ -1,6 +1,7 @@
 #include "tui/opentui/pane_frame.h"
 
 #include "styled_text.h"
+#include "tui/glyphs.h"
 #include "tui/opentui/engine.h"
 #include "tui/opentui/rounded_box.h"
 #include "tui/tui_design.h"
@@ -156,20 +157,24 @@ void draw_pane_chrome(OpenTuiHandle frame, const TUI& tui) {
                       status,
                       d.accent.info,
                       d.bg.scroll);
-        } else if (!chrome.activity_badge.empty() && status_budget > 0) {
+        } else if (chrome.activity_badge != ActivityBadgeKind::None
+                   && status_budget > 0) {
             // Unfocused activity/completion indicator (#41) — right-aligned
             // on the border so it doesn't collide with a focused prompt.
-            std::string badge = trim_to_cells(chrome.activity_badge,
-                                              status_budget);
-            badge = " " + badge + " ";
+            // Colour follows the badge kind. The glyph is only the picture.
+            const GlyphTone tone = tone_for(chrome.activity_badge);
+            const TuiRgba& color = tone == GlyphTone::Error   ? d.accent.error
+                                 : tone == GlyphTone::Warning ? d.accent.warning
+                                 : tone == GlyphTone::Success ? d.accent.success
+                                                              : d.text.muted;
+            std::string badge = " ";
+            badge += glyph_for(chrome.activity_badge);
+            badge += " ";
+            badge = trim_to_cells(badge, status_budget);
             const int badge_w = cell_width(badge);
             const int right_x = static_cast<int>(block_x + block_w - 1);
             const int bx = right_x - inset - badge_w + 1;
             if (bx > static_cast<int>(block_x)) {
-                const TuiRgba& color = (badge.find("✗") != std::string::npos)
-                    ? d.accent.error
-                    : (badge.find("●") != std::string::npos) ? d.accent.warning
-                                                             : d.accent.success;
                 draw_text(frame,
                           static_cast<std::uint32_t>(bx),
                           static_cast<std::uint32_t>(row_y),
@@ -195,7 +200,7 @@ void draw_pane_chrome(OpenTuiHandle frame, const TUI& tui) {
                          d.bg.scroll);
         paint_status_or_badge(input_top_y);
     } else if (scroll_bottom_y > output_top_y && block_w >= 2
-               && (!chrome.activity_badge.empty()
+               && (chrome.activity_badge != ActivityBadgeKind::None
                    || !chrome.pre_input_status.empty()
                    || (chrome.status_active && !chrome.status.empty()))) {
         // No readline — park status / activity on the output box bottom edge.

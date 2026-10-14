@@ -57,7 +57,7 @@ A successful `/todo list` looks like:
 [END TODO]
 ```
 
-Markers match tool-row vocabulary: `○` pending, `●` in progress, `✓` done (`✗` canceled). `[p<N>]` is the row's `position` within its (status, conversation) bucket — useful when reasoning about `PATCH position` reorders. A `(tenant-wide)` suffix means the row's `conversation_id` is 0 — it'll surface in this conversation but also in every other thread for the tenant.
+Markers match the shared run-state set: `○` pending, `●` in progress, `✓` done, `⊘` canceled (not the failure mark). Markdown task lists use `□` / `■` from the same table. `ARBITER_GLYPHS=ascii` uses `-` / `*` / `+` / `/` and `[ ]` / `[x]`. `[p<N>]` is the row's `position` within its (status, conversation) bucket — useful when reasoning about `PATCH position` reorders. A `(tenant-wide)` suffix means the row's `conversation_id` is 0 — it'll surface in this conversation but also in every other thread for the tenant.
 
 `/todo list all` includes terminal rows (`completed`, `canceled`) for retrospective review; bare `/todo list` keeps the display focused on open work.
 

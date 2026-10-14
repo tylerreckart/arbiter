@@ -3,11 +3,58 @@
 
 #include "tui/fleet.h"
 #include "styled_text.h"
+#include "tui/glyphs.h"
 
 #include <algorithm>
+#include <clocale>
+#include <cstdlib>
 #include <string>
 
 using namespace arbiter;
+
+namespace {
+
+struct GlyphModeGuard {
+    std::string prev;
+    bool had = false;
+    explicit GlyphModeGuard(const char* mode) {
+        if (const char* p = std::getenv("ARBITER_GLYPHS")) {
+            had = true;
+            prev = p;
+        }
+        setenv("ARBITER_GLYPHS", mode, 1);
+    }
+    ~GlyphModeGuard() {
+        if (had) setenv("ARBITER_GLYPHS", prev.c_str(), 1);
+        else unsetenv("ARBITER_GLYPHS");
+    }
+};
+
+struct EnvVarGuard {
+    std::string key;
+    std::string prev;
+    bool had = false;
+    EnvVarGuard(const char* k, const char* value) : key(k) {
+        if (const char* p = std::getenv(k)) {
+            had = true;
+            prev = p;
+        }
+        if (value) setenv(k, value, 1);
+        else unsetenv(k);
+    }
+    ~EnvVarGuard() {
+        if (had) setenv(key.c_str(), prev.c_str(), 1);
+        else unsetenv(key.c_str());
+    }
+};
+
+// The suite asserts unicode shapes unless a case opts into ascii/auto.
+struct ForceUnicodeGlyphs {
+    ForceUnicodeGlyphs() { setenv("ARBITER_GLYPHS", "unicode", 1); }
+};
+[[maybe_unused]] const ForceUnicodeGlyphs kForceUnicodeGlyphs;
+
+}  // namespace
 
 TEST_CASE("stream_start opens a row; stream_end marks it ended but keeps it") {
     FleetTree t;
@@ -365,4 +412,143 @@ TEST_CASE("fleet pane height tracks content, not a fixed fraction of the termina
     CHECK(fleet_sidebar_height(-4, 3, 1, false) == 0);
     CHECK(fleet_sidebar_list_rows(0, 0) == 0);
     CHECK(fleet_sidebar_list_rows(one, 2) == 0);
+}
+
+TEST_CASE("cancelled fleet nodes are not painted as failures") {
+    GlyphModeGuard mode("unicode");
+    FleetTree t;
+    t.on_stream_start("loom", 1, 0);
+    t.on_stream_end(1, FleetTree::Terminal::Cancelled);
+    auto n = t.find_stream(1);
+    REQUIRE(n);
+    CHECK(n->cancelled);
+    CHECK(n->ended);
+    CHECK_FALSE(n->ok);
+    CHECK(fleet_node_status(*n) == RunState::Cancelled);
+    auto rows = t.paint_rows(28);
+    REQUIRE(rows.size() == 1);
+    CHECK(rows[0].status == RunState::Cancelled);
+    CHECK(rows[0].line.find(glyphs().cancelled) != std::string::npos);
+    CHECK(rows[0].line.find(glyphs().failed) == std::string::npos);
+
+    t.ingest_sse("stream_end",
+                 R"({"stream_id":1,"ok":false,"status":"cancelled"})");
+    CHECK(t.find_stream(1)->cancelled);
+}
+
+TEST_CASE("waiting fleet nodes use the dotted glyph and a blocked-on tail") {
+    GlyphModeGuard mode("unicode");
+    FleetTree t;
+    t.on_stream_start("vera", 2, 0);
+    t.on_waiting(2, "nexus");
+    auto n = t.find_stream(2);
+    REQUIRE(n);
+    CHECK(n->waiting);
+    CHECK_FALSE(n->running);
+    CHECK(fleet_node_status(*n) == RunState::Waiting);
+    CHECK(t.has_live());
+    auto rows = t.paint_rows(32);
+    REQUIRE(rows.size() == 1);
+    CHECK(rows[0].status == RunState::Waiting);
+    CHECK(rows[0].line.find(glyphs().waiting) != std::string::npos);
+    CHECK(rows[0].line.find("waiting on nexus") != std::string::npos);
+
+    t.on_text(2);
+    CHECK(fleet_node_status(*t.find_stream(2)) == RunState::Running);
+    t.ingest_sse("agent_wait", R"({"stream_id":2,"on":"nexus"})");
+    CHECK(fleet_node_status(*t.find_stream(2)) == RunState::Waiting);
+}
+
+TEST_CASE("ascii glyph mode keeps fleet marks in single-byte ASCII") {
+    GlyphModeGuard mode("ascii");
+    CHECK(glyph_mode() == GlyphMode::Ascii);
+    FleetTree t;
+    t.on_stream_start("index", 0, 0);
+    t.on_agent_spawned("quill", "c1", {"clause"});
+    t.on_stream_start("quill", 3, 1);
+    t.on_waiting(3, "nexus");
+    auto rows = t.paint_rows(40);
+    REQUIRE(rows.size() >= 2);
+    const std::string& jit = rows.back().line;
+    CHECK(jit.find('^') != std::string::npos);
+    CHECK(jit.find('~') != std::string::npos);
+    for (unsigned char c : jit) CHECK(c < 128);
+
+    FleetNode failed;
+    failed.agent = "forge";
+    failed.ended = true;
+    failed.ok = false;
+    const std::string bad = format_fleet_row(failed, true, true, 24);
+    CHECK(bad.find('x') != std::string::npos);
+
+    FleetNode cancelled;
+    cancelled.agent = "loom";
+    cancelled.ended = true;
+    cancelled.ok = false;
+    cancelled.cancelled = true;
+    const std::string stop = format_fleet_row(cancelled, true, true, 24);
+    CHECK(stop.find('/') != std::string::npos);
+    CHECK(stop.find('x') == std::string::npos);
+}
+
+TEST_CASE("unicode state glyphs are one cell and ascii mode is plain bytes") {
+    GlyphModeGuard unicode("unicode");
+    const char* prev_locale = std::setlocale(LC_ALL, nullptr);
+    const std::string saved_locale = prev_locale ? prev_locale : "C";
+    if (!std::setlocale(LC_ALL, "C.UTF-8")) {
+        std::setlocale(LC_ALL, saved_locale.c_str());
+    }
+    const char* marks[] = {
+        glyphs().pending, glyphs().running, glyphs().waiting,
+        glyphs().succeeded, glyphs().failed, glyphs().cancelled,
+        glyphs().advisor_halt, glyphs().advisor_redirect, glyphs().advisor_consult,
+        glyphs().intent_applied, glyphs().intent_hint, glyphs().presence,
+        glyphs().jit, glyphs().activity, glyphs().scheduled, glyphs().paused,
+        glyphs().loop, glyphs().folder_open, glyphs().folder_closed,
+        glyphs().task_todo, glyphs().task_done, glyphs().separator,
+        glyphs().handoff, glyphs().tree_vert, glyphs().tree_branch,
+        glyphs().tree_last,
+    };
+    for (const char* m : marks) {
+        CHECK(display_width(m) == 1);
+    }
+    GlyphModeGuard ascii("ascii");
+    const char* ascii_marks[] = {
+        glyphs().pending, glyphs().running, glyphs().waiting,
+        glyphs().succeeded, glyphs().failed, glyphs().cancelled,
+        glyphs().advisor_halt, glyphs().advisor_redirect, glyphs().advisor_consult,
+        glyphs().intent_applied, glyphs().intent_hint, glyphs().presence,
+        glyphs().jit, glyphs().activity, glyphs().scheduled, glyphs().paused,
+        glyphs().loop, glyphs().folder_open, glyphs().folder_closed,
+        glyphs().task_todo, glyphs().task_done, glyphs().separator,
+        glyphs().handoff, glyphs().tree_vert, glyphs().tree_branch,
+        glyphs().tree_last,
+    };
+    for (const char* m : ascii_marks) {
+        for (const unsigned char* p = reinterpret_cast<const unsigned char*>(m); *p; ++p) {
+            CHECK(*p < 128);
+        }
+    }
+    std::setlocale(LC_ALL, saved_locale.c_str());
+}
+
+TEST_CASE("glyph auto mode follows TERM and the locale") {
+    GlyphModeGuard glyphs_env("auto");
+    {
+        EnvVarGuard term("TERM", "dumb");
+        CHECK(glyph_mode() == GlyphMode::Ascii);
+    }
+    {
+        EnvVarGuard term("TERM", "xterm-256color");
+        EnvVarGuard lc("LC_ALL", "C");
+        CHECK(glyph_mode() == GlyphMode::Ascii);
+    }
+    {
+        EnvVarGuard term("TERM", "xterm-256color");
+        EnvVarGuard lc("LC_ALL", "en_US.UTF-8");
+        CHECK(glyph_mode() == GlyphMode::Unicode);
+    }
+    GlyphModeGuard forced("unicode");
+    EnvVarGuard term("TERM", "dumb");
+    CHECK(glyph_mode() == GlyphMode::Unicode);
 }

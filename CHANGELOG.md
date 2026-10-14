@@ -7,6 +7,9 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **TUI logs no longer paint over the input line.** While the interactive UI owns the terminal, stderr is appended to `~/.arbiter/tui.log` instead of the tty. That covers `openrouter_response`, `intent_route`, `intent_shadow`, and the other operational `fprintf` / `cerr` writers that were interleaving with the frame.
+- **Fleet pane sizes to its agents.** One row no longer takes about 40% of the right column. The list scrolls after 12 rows; Session, Agent, Todos, and Tools keep the remaining height.
 
 ### Fixed
 - **TUI logs no longer paint over the input line.** While the interactive UI owns the terminal, stderr is appended to `~/.arbiter/tui.log` instead of the tty. That covers `openrouter_response`, `intent_route`, `intent_shadow`, and the other operational `fprintf` / `cerr` writers that were interleaving with the frame.
@@ -19,6 +22,7 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ### Changed
 - **Live intent routing returns before Luna.** With `ARBITER_INTENT_LIVE=luna`, a cached Luna decision is the route. Otherwise the local embedding model chooses the specialist on the request path, and a missing model uses `ARBITER_INTENT_DEFAULT_AGENT`. Luna runs in the background for a low-confidence embed or a missing model (budget `ARBITER_INTENT_LUNA_TIMEOUT_MS`, default 2000 ms, sized to live p50 1.0–1.4 s and p95 1.6–1.9 s). A successful result fills the decision cache and an `intent_decision` calibration row (request hash, embedding choice and probability, Luna choice and probability, latencies, final agent, later advisor verdict). `ARBITER_INTENT_LUNA_REROUTE` (default off) may swap the specialist when Luna has already finished and strongly disagrees, without changing the executor model.
+- - **State glyphs come from one table.** `ARBITER_GLYPHS=unicode` (the default on a UTF-8 locale) is the shape set: ● running, ○ pending, ◌ waiting, ✓ done, ✗ failed, ⊘ cancelled. Advisor consult / redirect / halt are ◆ / ↺ / ■, presence notes are ↳, JIT agents stay ◇, and an unfocused pane's activity badge is • so it no longer looks like a running agent. Schedules use ◷ instead of the wide ⏱. Markdown tasks use □ / ■, the same module as the todo sidebar. `ARBITER_GLYPHS=ascii` (also chosen automatically for `TERM=dumb` or a non-UTF-8 locale) is the ASCII-safe set. A cancelled fleet row is no longer drawn as a failure.
 
 ## [0.13.12] — 2026-10-13
 

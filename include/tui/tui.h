@@ -28,6 +28,8 @@
 // Tool-call / thinking spinners (set_pre_input_status / set_status) paint
 // inline over the input box's top border.
 
+#include "tui/glyphs.h"
+
 #include <atomic>
 #include <functional>
 #include <mutex>
@@ -72,7 +74,8 @@ struct TuiChromeSnapshot {
     std::string status;
     std::string pre_input_status;
     // Unfocused activity badge drawn on the mid-separator when set.
-    std::string activity_badge;
+    // Colour comes from the kind, not from searching the glyph string.
+    ActivityBadgeKind activity_badge = ActivityBadgeKind::None;
     // When set, pane chrome uses these instead of theme footer strings
     // (interactive permission / diff-review cards).
     bool footer_override = false;
@@ -175,8 +178,9 @@ public:
     // every focus or structural change.  In single-pane mode it is unused.
     void set_focus_accent(bool active);
 
-    // Short badge for unfocused panes (e.g. "●", "✓", "✗"). Cleared on focus.
-    void set_activity_badge(const std::string& badge);
+    // Short badge for unfocused panes. Pulse while a turn runs or new
+    // output arrives; Succeeded / Failed when it finishes off-focus.
+    void set_activity_badge(ActivityBadgeKind kind);
     void clear_activity_badge();
 
     int cols() const;
@@ -203,7 +207,7 @@ private:
     std::atomic<bool> queue_indicator_shown_{false};
     std::string current_status_;
     std::string current_pre_input_status_;
-    std::string activity_badge_;
+    ActivityBadgeKind activity_badge_ = ActivityBadgeKind::None;
     mutable std::recursive_mutex tty_mu_;
 
     // Absolute 1-indexed terminal rows for each chrome slot within rect_.

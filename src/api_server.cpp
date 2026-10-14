@@ -7,6 +7,7 @@
 // that terminates TLS, so we don't bother with HTTPS here.
 
 #include "api_server.h"
+#include "tui/glyphs.h"
 #include "api/auth.h"
 #include "api/event_logger.h"
 #include "api/http_request.h"
@@ -6176,12 +6177,8 @@ TodoInvoker make_todo_invoker_callback(
                 const bool terminal =
                     (r.status == "completed" || r.status == "canceled");
                 if (terminal && !include_terminal) continue;
-                const char* mark =
-                    r.status == "in_progress" ? "● " :
-                    r.status == "completed"   ? "✓ " :
-                    r.status == "canceled"    ? "✗ " :
-                    r.status == "pending"     ? "○ " :
-                                                "  ";
+                const char* mark = glyph_for(run_state_from_todo(r.status.c_str()));
+                out << mark << " ";
                 out << mark << "#" << r.id
                     << "  [p" << r.position << "]"
                     << "  [" << r.status << "]  "
@@ -8417,7 +8414,8 @@ void handle_a2a_message_stream(int fd,
         });
 
     orch->set_stream_end_callback(
-        [&](const std::string& /*a*/, int stream_id, bool /*ok*/) {
+        [&](const std::string& /*a*/, int stream_id,
+            Orchestrator::StreamEndStatus /*status*/) {
             std::lock_guard<std::mutex> lk(stream_meta_mu);
             depth_by_stream.erase(stream_id);
             agent_by_stream.erase(stream_id);
@@ -10290,13 +10288,19 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     // line buffer before stream_end lands on the wire.  Non-master streams
     // don't use this filter; flushing it for them is a no-op.
     orch->set_stream_end_callback(
-        [&emit, &filter, master_sid](const std::string& id, int sid, bool ok) {
+        [&emit, &filter, master_sid](const std::string& id, int sid,
+                                     Orchestrator::StreamEndStatus status) {
             if (sid == *master_sid) filter.flush();
             auto p = jobj();
             auto& m = p->as_object_mut();
+            const bool ok = status == Orchestrator::StreamEndStatus::Ok;
+            const char* label =
+                status == Orchestrator::StreamEndStatus::Cancelled ? "cancelled"
+                : ok ? "ok" : "failed";
             m["agent"]     = jstr(id);
             m["stream_id"] = jnum(static_cast<double>(sid));
             m["ok"]        = jbool(ok);
+            m["status"]    = jstr(label);
             emit("stream_end", p);
         });
 

@@ -10,6 +10,7 @@
 // It does not spawn agents or change orchestrate/reconcile behavior.
 
 #include "json.h"
+#include "tui/glyphs.h"
 #include "tui/tui.h"
 
 #include <mutex>
@@ -32,6 +33,9 @@ struct FleetNode {
     bool        running = false;
     bool        ended = false;
     bool        ok = true;
+    bool        waiting = false;    // blocked on another agent or a gate
+    bool        cancelled = false;  // ended by cancel, not a failure
+    std::string blocked_on;         // who or what this node is waiting on
     std::string active_tool;
     int         input_tokens = 0;
     int         output_tokens = 0;
@@ -40,6 +44,15 @@ struct FleetNode {
     std::string pane_agent;         // host pane's current_agent at bind
     std::vector<std::string> clauses;  // JIT cover clause ids
 };
+
+// Cancelled wins over failed. Waiting wins over a stale running bit.
+inline RunState fleet_node_status(const FleetNode& n) {
+    if (n.cancelled) return RunState::Cancelled;
+    if (n.ended) return n.ok ? RunState::Succeeded : RunState::Failed;
+    if (n.waiting) return RunState::Waiting;
+    if (n.running) return RunState::Running;
+    return RunState::Pending;
+}
 
 struct FleetReconcileOverlay {
     bool        active = false;
@@ -63,6 +76,9 @@ struct FleetPaintRow {
     bool        running = false;
     bool        ended = false;
     bool        ok = true;
+    bool        waiting = false;
+    bool        cancelled = false;
+    RunState    status = RunState::Pending;
     std::string conversation_id;
     std::string pane_agent;
     std::string line;       // single scannable display line
@@ -110,7 +126,14 @@ public:
     void on_text(int stream_id);
     void on_tool_call(int stream_id, const std::string& tool, bool started);
     void on_token_usage(int stream_id, int input_tokens, int output_tokens);
+    // How a stream closed. Cancelled is not a failure.
+    enum class Terminal { Ok, Failed, Cancelled };
+
     void on_stream_end(int stream_id, bool ok);
+    void on_stream_end(int stream_id, Terminal how);
+    // Blocked, not running. `blocked_on` is an agent id or a short phrase
+    // painted as the row tail. Cleared when the node runs again.
+    void on_waiting(int stream_id, const std::string& blocked_on);
     void on_agent_spawned(const std::string& agent,
                           const std::string& clone_id,
                           const std::vector<std::string>& clauses,

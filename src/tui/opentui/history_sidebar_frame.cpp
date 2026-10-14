@@ -1,6 +1,7 @@
 #include "tui/opentui/history_sidebar_frame.h"
 
 #include "styled_text.h"
+#include "tui/glyphs.h"
 #include "tui/opentui/engine.h"
 #include "tui/opentui/rounded_box.h"
 #include "tui/sidebar_format.h"
@@ -364,7 +365,10 @@ void draw_overlay_panel(OpenTuiHandle frame,
             line += " ";
         }
         line += it.label;
-        if (it.current) line += " \u2713";
+        if (it.current) {
+            line += " ";
+            line += glyphs().succeeded;
+        }
 
         const TuiRgba& fg = it.destructive ? d.accent.error
                           : selected       ? d.accent.primary
@@ -502,7 +506,10 @@ void draw_history_sidebar(OpenTuiHandle frame,
         if (row.kind == HistorySidebarRowKind::Section) {
             title = row.title;
         } else if (row.kind == HistorySidebarRowKind::Folder) {
-            title = (row.expanded ? "[-] " : "[+] ") + row.title;
+            title = std::string(row.expanded ? glyphs().folder_open
+                                              : glyphs().folder_closed);
+            title += " ";
+            title += row.title;
             if (confirming && snap.delete_is_folder) {
                 subtitle = "Chats stay · unfiled";
             }

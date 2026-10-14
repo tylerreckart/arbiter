@@ -3,6 +3,7 @@
 #include "tui/tui.h"
 #include "cli_helpers.h"
 #include "theme.h"
+#include "tui/glyphs.h"
 #include "tui/spinner.h"
 #include "tui/tui_design.h"
 
@@ -244,14 +245,14 @@ void TUI::set_focus_accent(bool active) {
     focus_accent_ = active;
 }
 
-void TUI::set_activity_badge(const std::string& badge) {
+void TUI::set_activity_badge(ActivityBadgeKind kind) {
     std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
-    activity_badge_ = badge;
+    activity_badge_ = kind;
 }
 
 void TUI::clear_activity_badge() {
     std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
-    activity_badge_.clear();
+    activity_badge_ = ActivityBadgeKind::None;
 }
 
 // ─── ThinkingIndicator ───────────────────────────────────────────────────────
@@ -348,9 +349,9 @@ std::string ToolCallIndicator::finalize() {
     const Theme& t = theme();
     std::string out;
     if (f == 0) {
-        out += t.accent_success + "\u2713" + t.reset + " ";
+        out += t.accent_success + glyphs().succeeded + t.reset + " ";
     } else {
-        out += t.accent_error   + "\u2717" + t.reset + " ";
+        out += t.accent_error   + glyphs().failed + t.reset + " ";
     }
     out += t.dim;
     out += std::to_string(n);

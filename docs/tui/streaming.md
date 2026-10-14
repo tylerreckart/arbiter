@@ -32,7 +32,7 @@ Sub-agent progress uses the same pipeline with `kInterim` policy: dimmed prose, 
 
 When the agent emits `/fetch`, `/exec`, `/agent`, `/mem`, `/write … /endwrite`, etc., `BlockParser` intercepts those lines. Behaviour depends on `/verbose`:
 
-**Verbose off (default).** The raw `/cmd` lines are *swallowed* from the scroll region. Each tool still appears as a compact `ToolSegment` row in scrollback (`○ exec:git status` → `✓` / `✗`), and the mid separator above the input shows a live count spinner:
+**Verbose off (default).** The raw `/cmd` lines are *swallowed* from the scroll region. Each tool still appears as a compact `ToolSegment` row in scrollback (`● exec:git status` → `✓` / `✗`), and the mid separator above the input shows a live count spinner:
 
 ```
 ─── [⠋ 3 tool calls…] ───────────────────────────────────────

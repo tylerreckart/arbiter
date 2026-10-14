@@ -17,6 +17,24 @@
 
 using namespace arbiter;
 
+namespace {
+struct GlyphModeGuard {
+    std::string prev;
+    bool had = false;
+    explicit GlyphModeGuard(const char* mode) {
+        if (const char* p = std::getenv("ARBITER_GLYPHS")) {
+            had = true;
+            prev = p;
+        }
+        setenv("ARBITER_GLYPHS", mode, 1);
+    }
+    ~GlyphModeGuard() {
+        if (had) setenv("ARBITER_GLYPHS", prev.c_str(), 1);
+        else unsetenv("ARBITER_GLYPHS");
+    }
+};
+}  // namespace
+
 TEST_CASE("normalize_api_base_url rejects missing scheme and empty host") {
     CHECK(normalize_api_base_url("").empty());
     CHECK(normalize_api_base_url("  ").empty());
@@ -212,6 +230,7 @@ TEST_CASE("RemoteSseTurnConsumer captures request_id via hook") {
 }
 
 TEST_CASE("RemoteSseTurnConsumer paints intent and advisor chrome") {
+    GlyphModeGuard mode("unicode");
     OutputQueue queue;
     StreamRenderer renderer(kMasterStream, queue);
     RemoteSseTurnConsumer consumer(renderer, queue);
@@ -234,13 +253,13 @@ TEST_CASE("RemoteSseTurnConsumer paints intent and advisor chrome") {
         for (const auto& line : item.styled_lines) prose.push_back(line.text);
     }
     REQUIRE(prose.size() == 4);  // intent, consult, redirect, halt (gate_halt skipped)
-    CHECK(prose[0].find("\u2197 ") == 0);
+    CHECK(prose[0].find("\u2192 ") == 0);
     CHECK(prose[0].find("research") != std::string::npos);
-    CHECK(prose[1].find("\u25c7 ") == 0);
+    CHECK(prose[1].find("\u25C6 ") == 0);
     CHECK(prose[1].find("advise") != std::string::npos);
-    CHECK(prose[2].find("\u21bb ") == 0);
+    CHECK(prose[2].find("\u21BA ") == 0);
     CHECK(prose[2].find("redirect") != std::string::npos);
-    CHECK(prose[3].find("\u00d7 ") == 0);
+    CHECK(prose[3].find("\u25A0 ") == 0);
     CHECK(prose[3].find("halt") != std::string::npos);
     CHECK(prose[3].find("incomplete") != std::string::npos);
 }

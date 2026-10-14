@@ -84,7 +84,7 @@ Desired-end-state work (workspace + tests + rollback) is [`POST /v1/reconcile`](
 | Surface | What you see |
 |---------|----------------|
 | SSE `intent` | After `request_received`, before `stream_start`. See [SSE catalog](sse-events.md). |
-| TUI | Applied: info-tinted `↗ research · heuristic` (callsign suffix when the agent id differs from the kind, e.g. `scout`). Classified but not applied: warning-tinted `· intent research · hint:scout`. Quiet when `kind` is empty/`unknown`. Distinct from `·` system activity and from `→ delegating:`. |
+| TUI | Applied: info-tinted `→ research · heuristic` (callsign suffix when the agent id differs from the kind, e.g. `scout`). Classified but not applied: warning-tinted `· intent research · hint:scout`. Quiet when `kind` is empty/`unknown`. Distinct from `·` system activity. `ARBITER_GLYPHS=ascii` uses `->` and `.`. |
 | Verbose API log | `--verbose` renders `intent` alongside `advisor` / `tool_call`. |
 
 ## Live logprob router

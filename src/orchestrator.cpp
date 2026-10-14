@@ -1358,7 +1358,7 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
             r.content    = std::move(total_content);
             r.input_tokens  = total_input_tok;
             r.output_tokens = total_output_tok;
-            if (stream_end_cb_) stream_end_cb_(agent_id, sid, false);
+            emit_stream_end(agent_id, sid, StreamEndStatus::Cancelled);
             return r;
         }
         // Notify UI that a sub-agent is about to make an API call.
@@ -1387,7 +1387,7 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
         }
         user_already_committed = false;
         if (!resp.ok) {
-            if (stream_end_cb_) stream_end_cb_(agent_id, sid, false);
+            emit_stream_end(agent_id, sid, resp);
             // Surface what we got so far so a downstream caller can show
             // partial progress + the error.
             resp.content       = std::move(total_content) + resp.content;
@@ -1497,7 +1497,7 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
                     resp.content       = std::move(total_content);
                     resp.input_tokens  = total_input_tok;
                     resp.output_tokens = total_output_tok;
-                    if (stream_end_cb_) stream_end_cb_(agent_id, sid, false);
+                    emit_stream_end(agent_id, sid, StreamEndStatus::Failed);
                     return resp;
                 }
                 ++redirects_used;
@@ -1516,7 +1516,7 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
             // (or the top-level REPL) decides what to do.
             if (depth == 0 && escalation_cb_)
                 escalation_cb_(agent_id, sid, sig.text);
-            if (stream_end_cb_) stream_end_cb_(agent_id, sid, false);
+            emit_stream_end(agent_id, sid, StreamEndStatus::Failed);
             resp.ok          = false;
             resp.error_type  = "advisor_halt";
             resp.error       = sig.text;
@@ -1604,9 +1604,9 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
         resp.error      = "tool loop iteration limit reached (max " +
                           std::to_string(kMaxTurns) + ")";
         resp.had_tool_calls = true;
-        if (stream_end_cb_) stream_end_cb_(agent_id, sid, false);
-    } else if (stream_end_cb_) {
-        stream_end_cb_(agent_id, sid, resp.ok);
+        emit_stream_end(agent_id, sid, StreamEndStatus::Failed);
+    } else {
+        emit_stream_end(agent_id, sid, resp);
     }
     return resp;
 }
@@ -1943,7 +1943,7 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     agent_ptr = luna_reroute_target(agent_ptr, dispatch_id);
     ApiResponse resp = agent_ptr->stream(std::move(current_parts), gated_cb);
     if (!resp.ok) {
-        if (stream_end_cb_) stream_end_cb_(dispatch_id, sid, false);
+        emit_stream_end(dispatch_id, sid, resp);
         return resp;
     }
     auto cmds = parse_agent_commands(resp.content);
@@ -2025,7 +2025,7 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
             r.input_tokens  = total_input_tok;
             r.output_tokens = total_output_tok;
             r.had_tool_calls = had_any_tool_calls;
-            if (stream_end_cb_) stream_end_cb_(dispatch_id, sid, false);
+            emit_stream_end(dispatch_id, sid, StreamEndStatus::Cancelled);
             return r;
         }
         if (cmds.empty()) {
@@ -2083,7 +2083,7 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
 
             if (sig.kind == AdvisorGateOutput::Kind::Halt) {
                 if (escalation_cb_) escalation_cb_(dispatch_id, sid, sig.text);
-                if (stream_end_cb_) stream_end_cb_(dispatch_id, sid, false);
+                emit_stream_end(dispatch_id, sid, StreamEndStatus::Failed);
                 resp.ok           = false;
                 resp.error_type   = "advisor_halt";
                 resp.error        = sig.text;
@@ -2108,7 +2108,7 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
                 resp.input_tokens  = total_input_tok;
                 resp.output_tokens = total_output_tok;
                 resp.had_tool_calls = had_any_tool_calls;
-                if (stream_end_cb_) stream_end_cb_(dispatch_id, sid, false);
+                emit_stream_end(dispatch_id, sid, StreamEndStatus::Failed);
                 return resp;
             }
 
@@ -2203,7 +2203,7 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
             resp = agent_ptr->stream(std::move(current_parts), gated_cb);
         }
         if (!resp.ok) {
-            if (stream_end_cb_) stream_end_cb_(dispatch_id, sid, false);
+            emit_stream_end(dispatch_id, sid, resp);
             resp.content        = std::move(total_content) + resp.content;
             resp.input_tokens   = total_input_tok  + resp.input_tokens;
             resp.output_tokens  = total_output_tok + resp.output_tokens;
@@ -2236,9 +2236,9 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
         resp.error_type = "iteration_limit";
         resp.error      = "tool loop iteration limit reached (max " +
                           std::to_string(kMaxIters) + ")";
-        if (stream_end_cb_) stream_end_cb_(dispatch_id, sid, false);
-    } else if (stream_end_cb_) {
-        stream_end_cb_(dispatch_id, sid, resp.ok);
+        emit_stream_end(dispatch_id, sid, StreamEndStatus::Failed);
+    } else {
+        emit_stream_end(dispatch_id, sid, resp);
     }
     return resp;
 }
@@ -2688,6 +2688,25 @@ std::string Orchestrator::execute_slash_command(const std::string& line,
                                   nullptr,
                                   workspace_root_provider_cb_,
                                   host_exec_surface_);
+}
+
+void Orchestrator::emit_stream_end(const std::string& agent_id, int stream_id,
+                                  StreamEndStatus status) {
+    if (stream_end_cb_) stream_end_cb_(agent_id, stream_id, status);
+}
+
+void Orchestrator::emit_stream_end(const std::string& agent_id, int stream_id,
+                                  const ApiResponse& resp) {
+    if (!stream_end_cb_) return;
+    if (resp.ok) {
+        stream_end_cb_(agent_id, stream_id, StreamEndStatus::Ok);
+        return;
+    }
+    if (resp.error_type == "cancelled") {
+        stream_end_cb_(agent_id, stream_id, StreamEndStatus::Cancelled);
+        return;
+    }
+    stream_end_cb_(agent_id, stream_id, StreamEndStatus::Failed);
 }
 
 void Orchestrator::fire_history_checkpoint() {

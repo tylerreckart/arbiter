@@ -442,8 +442,14 @@ void ReplSession::install_orch_callbacks() {
     });
     orch.set_stream_end_callback([&](const std::string& /*agent_id*/,
                                        int stream_id,
-                                       bool ok) {
-        fleet.on_stream_end(stream_id, ok);
+                                       Orchestrator::StreamEndStatus status) {
+        using Term = FleetTree::Terminal;
+        const Term how = status == Orchestrator::StreamEndStatus::Ok
+            ? Term::Ok
+            : status == Orchestrator::StreamEndStatus::Cancelled
+                ? Term::Cancelled
+                : Term::Failed;
+        fleet.on_stream_end(stream_id, how);
         if (pump_notify) pump_notify();
     });
     // Mid-turn durability: after each committed model iteration and each

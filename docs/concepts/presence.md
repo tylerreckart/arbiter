@@ -98,7 +98,7 @@ Presence does **not** fire on a terminating turn with no tools — that is the a
 | Surface | Behaviour |
 |---------|-----------|
 | SSE `presence` | One event per watcher consult: `kind` is `silent` or `context`; `watcher`, `agent` (the working agent), `stream_id`, optional `detail` / `malformed`. |
-| TUI | `CONTEXT` paints `◎ presence · <watcher> <note>`. `SILENT` is quiet. |
+| TUI | `CONTEXT` paints `↳ presence · <watcher> <note>` (`>>` when `ARBITER_GLYPHS=ascii`). `SILENT` is quiet. |
 | Roster | Always-on agents show `+presence` on the master's `AGENTS` line so index does not treat them as ordinary specialists. |
 
 ## Presence is not a second advisor

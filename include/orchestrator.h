@@ -137,7 +137,9 @@ public:
     // `stream_start`: one shot before the turn's first API call.
     // `agent_stream`: every clean text delta produced during the turn
     //                 (after StreamFilter strips /cmd lines).
-    // `stream_end`:   one shot after the turn finishes (ok=false on error).
+    // `stream_end`:   one shot after the turn finishes. Cancelled is not
+    //                 a failure — fleet paints it with the cancelled glyph.
+    enum class StreamEndStatus { Ok, Failed, Cancelled };
     using StreamStartCallback = std::function<void(const std::string& agent_id,
                                                     int stream_id,
                                                     int depth)>;
@@ -146,7 +148,7 @@ public:
                                                     const std::string& delta)>;
     using StreamEndCallback   = std::function<void(const std::string& agent_id,
                                                     int stream_id,
-                                                    bool ok)>;
+                                                    StreamEndStatus status)>;
     void set_stream_start_callback(StreamStartCallback cb) { stream_start_cb_ = std::move(cb); }
     void set_agent_stream_callback(AgentStreamCallback  cb) { agent_stream_cb_ = std::move(cb); }
     void set_stream_end_callback  (StreamEndCallback    cb) { stream_end_cb_   = std::move(cb); }
@@ -164,7 +166,7 @@ public:
     // Fired when an agent's gate-mode advisor returns HALT (or when the
     // redirect budget is exhausted and the runtime synthesises one).  Sibling
     // of stream_end_cb_, NOT a replacement — escalation_cb_ fires first with
-    // the halt reason, then stream_end_cb_(ok=false) fires as for any other
+    // the halt reason, then stream_end_cb_(Failed) fires as for any other
     // failed turn.  Subscribers wire this to a UI affordance that surfaces
     // the reason out-of-band from the agent's normal text stream (REPL
     // banner, SSE `escalation` event, TUI overlay, etc.).
@@ -557,6 +559,10 @@ private:
     std::atomic<int>    stream_counter_{-1};   // next_stream_id returns 0 first
     int                 next_stream_id();
     void fire_history_checkpoint();
+    void emit_stream_end(const std::string& agent_id, int stream_id,
+                         StreamEndStatus status);
+    void emit_stream_end(const std::string& agent_id, int stream_id,
+                         const ApiResponse& resp);
 
     // True when this turn should stop: sticky cancel, hard-cancel, or the
     // thread-local RequestCancelScope token.  Rechecked at each dispatch
