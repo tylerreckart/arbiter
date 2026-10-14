@@ -143,8 +143,7 @@ private:
     void apply_page_scroll(int direction);
 
     void bind_viewport(const TUI& tui, int content_width) const;
-    // Theme prompt, plus the accent rail unless reverse-i-search replaced it.
-    // Caller holds mu_.
+    // Theme prompt width. Caller holds mu_.
     [[nodiscard]] int input_lead_cols_locked() const;
 
     TUI& tui_;

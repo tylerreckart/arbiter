@@ -7,11 +7,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+## [0.13.14] — 2026-10-14
+
 ### Fixed
 - **fn+Up no longer kills the session.** On a compact keyboard that chord is Page Up. Scrolling ran while the input thread still held the editor lock, and the frame pump takes the layout lock first and then the editor lock, so the two threads deadlocked. Page Up / Page Down (including modified and kitty-protocol reports) now scroll after that lock is released. A history-replay failure at the top of scrollback is ignored instead of aborting the process.
 
 ### Changed
-- **User echoes and the input line share one accent rail.** The rounded `user` box is gone. Both surfaces paint a one-cell accent and `›` (`>` when glyphs are ASCII). Echoes wrap on word boundaries. Thinking stays a box: the title is the agent id in that agent's color plus a dim `thought`, and the collapsed body is one row (`^O` still expands it). A tool row splits the verb from the target. Successful output stays behind `^O`. A failed command always shows one `ERR:` line in the error color.
+- **User echoes use the prompt color, and the input line is bare.** The rounded `user` box is gone. An echoed submit is `›` (`>` when glyphs are ASCII) with the text in that same color, and no block. The input line has neither the block nor the caret, and typed text uses that same color. Echoes wrap on word boundaries. Thinking stays a box: the title is the agent id in that agent's color plus a dim `thought`, and the collapsed body is one row (`^O` still expands it). A tool row splits the verb from the target. Successful output stays behind `^O`. A failed command always shows one `ERR:` line in the error color.
 - **Fleet rows are name-first.** A name is not cut below 8 cells; the tail is dropped first. The tail is a short verb or a token count, never a path. The selected row writes one detail line under the list, and that row is always reserved so the box does not resize. `j`/`k` move, Enter opens the agent, `Esc` only leaves focus, and `x` cancels.
 
 ## [0.13.13] — 2026-10-14

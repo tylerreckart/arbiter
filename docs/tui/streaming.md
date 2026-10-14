@@ -49,8 +49,8 @@ When a provider streams a separate reasoning channel (`thinking_delta` /
 appears in scrollback above the assistant prose. The title is the agent id
 in that agent's color plus a dim `thought`, and the markdown body is one
 preview row. Expand with `^O`. Models without that channel keep the header
-spinner only. User submits paint as a one-cell accent rail and `›`, the
-same mark as the input line, wrapped on word boundaries.
+spinner only. A user submit paints as `›` with the text in that same
+color, wrapped on word boundaries. The input line has no prompt mark; typed text uses that same color.
 
 ## End of turn
 

@@ -139,7 +139,7 @@ public:
     // `agent_id` is the thinking-box title, drawn in that agent's color.
     void push_thinking(const std::string& delta, const std::string& agent_id = {});
 
-    // User submit echo → UserEchoSegment (accent rail + prompt mark).
+    // User submit echo → UserEchoSegment (prompt mark, text in that color).
     // `notify` wakes the output pump; the input loop defers that until
     // CommandQueue::push succeeds so a rejected submit can still drop the echo.
     void push_user_echo(std::string_view text, bool notify = true);
