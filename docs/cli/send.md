@@ -21,13 +21,13 @@ No TTY required. No alt-screen. No persistent session — the conversation histo
 Pipe input via your shell:
 
 ```bash
-arbiter --send reviewer "review: if (arr.length = 0) return;"
+arbiter --send vera "review: if (arr.length = 0) return;"
 ```
 
 Capture output:
 
 ```bash
-SUMMARY=$(arbiter --send research "summarise the last week of my git log")
+SUMMARY=$(arbiter --send scout "summarise the last week of my git log")
 echo "$SUMMARY" | mail -s "Weekly summary" me@example.com
 ```
 
@@ -35,14 +35,14 @@ Compose with other tools:
 
 ```bash
 git log --since='1 week ago' --oneline \
-  | arbiter --send writer "Turn this changelog into release notes" \
+  | arbiter --send quill "Turn this changelog into release notes" \
   > RELEASE_NOTES.md
 ```
 
 CI gate:
 
 ```bash
-arbiter --send reviewer "$(git diff main...HEAD)" \
+arbiter --send vera "$(git diff main...HEAD)" \
   | grep -q '^APPROVED' || exit 1
 ```
 

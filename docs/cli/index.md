@@ -51,8 +51,8 @@ arbiter --help                             Print built-in help
 **One-shot (`--send`).** No TTY, no panes, no streaming. Sends one message to one agent, prints the reply on stdout, exits non-zero on error. Built for scripts and pipelines:
 
 ```bash
-echo "$DIFF" | arbiter --send reviewer "$(cat)"
-arbiter --send research "summarise the top 3 issues" > /tmp/summary.md
+echo "$DIFF" | arbiter --send vera "$(cat)"
+arbiter --send scout "summarise the top 3 issues" > /tmp/summary.md
 ```
 
 The agent runs the full orchestration loop internally (tool calls, sub-agent delegation) — you just don't see the intermediate steps; you see the final synthesised reply.

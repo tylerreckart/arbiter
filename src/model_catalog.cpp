@@ -35,8 +35,8 @@ constexpr ModelCatalogEntry kModels[] = {
      "GPT-5.5 — via OpenRouter", true},
     {"openai/gpt-5.4",                  "openrouter", 1'000'000, "", false},
     {"openai/gpt-5.4-mini",             "openrouter", 1'000'000, "", false},
-    {"~openai/gpt-latest",              "openrouter", 1'000'000,
-     "OpenAI latest — via OpenRouter (recommended)", true},
+    {"~openai/gpt-sol-latest",          "openrouter", 1'000'000,
+     "OpenAI Sol latest — via OpenRouter (recommended)", true},
     {"~openai/gpt-mini-latest",         "openrouter", 1'000'000, "", false},
     // Google Gemini (OpenRouter)
     {"google/gemini-3.1-pro-preview",   "openrouter", 1'000'000, "", false},
