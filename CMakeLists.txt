@@ -506,6 +506,14 @@ option(INDEX_BUILD_TESTS "Build PTY integration tests" ON)
 if(INDEX_BUILD_TESTS)
     enable_testing()
 
+    # Tracks project(arbiter VERSION ...), including a suffix when one is set.
+    add_test(NAME arbiter_version COMMAND arbiter --version)
+    set_tests_properties(arbiter_version PROPERTIES
+        PASS_REGULAR_EXPRESSION "^arbiter ${PROJECT_VERSION}")
+    add_test(NAME arbiter_version_short COMMAND arbiter -V)
+    set_tests_properties(arbiter_version_short PROPERTIES
+        PASS_REGULAR_EXPRESSION "^arbiter ${PROJECT_VERSION}")
+
     add_executable(line_editor_tests
         tests/pty_harness.cpp
         tests/test_line_editor.cpp
