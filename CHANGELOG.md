@@ -3,10 +3,26 @@
 All notable changes to arbiter are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-Until the 1.0 tag, breaking changes can still land on minor bumps.
-The freeze is [docs/stability.md](docs/stability.md).
+From 1.0, the stable surface is [docs/stability.md](docs/stability.md).
+A patch release does not change it. A minor release may add to it.
 
 ## [Unreleased]
+
+## [1.0.0] — 2026-10-15
+
+### Added
+- **`arbiter --version` and `-V`.** Both print the version compiled in from `project(arbiter VERSION ...)` in `CMakeLists.txt`, the same string the TUI shows on the bottom border.
+- **Stability contract.** [docs/stability.md](docs/stability.md) is what this tag freezes: CLI flags, agent file fields, the `~/.arbiter` layout, and the documented environment variables. `--api`, tenants, A2A, reconcile, the scheduler, and voice stay experimental. Agent files may set `version` (absent means 1). Opening the database runs a migration hook; `PRAGMA user_version` is 1. `~/.arbiter` is mode `0700`. `tenants.db` (and its `-wal` / `-shm`) and `tui.log` are mode `0600`.
+
+### Changed
+- **The local bge router is the default.** `ARBITER_ROUTER` is `bge` (default), `luna`, or `heuristic`. bge scores the request on-device and does not call Luna. A low-confidence score is still the route for that turn. A missing model, a failed download, or `ARBITER_EMBED_NO_FETCH` uses the keyword heuristic and does not start Luna. Background Luna (`openai/gpt-6-luna`) runs only when `ARBITER_ROUTER=luna`. `ARBITER_INTENT_LIVE` still selects a mode and prints one deprecation line.
+- **First-use model is `~openai/gpt-sol-latest`.** `~openai/gpt-latest` is not on OpenRouter's public model list. Sol is the flagship line, and the `~` alias tracks the current Sol model.
+- **Tool-loop budget and partial sub-agent results (#396).** The budget is the agent's `max_turns`, then `ARBITER_MAX_TURNS`, then 6 at the top level and 12 for a sub-agent. A delegated turn that runs out of rounds keeps the text it already produced (`[PARTIAL: …]` when the turn failed with content) instead of dropping it. One last model call, with tools off, writes the best answer. A plan continues after a capped phase.
+- **`go run` asks before it executes.** Interpreter confirmation already covered `bash`, `python`, `node`, `deno`, `awk`, and the rest. `go run` (including `go -C <dir> run` and `env go run`) is on that list. `go test` and `go build` are not.
+- **TUI redesign.** An echoed submit is the prompt color with no box. The input line is bare. Thinking stays a box; tool rows split the verb from the target. Fleet rows are name-first, with one detail line for the selected agent. Status marks come from one glyph table (`ARBITER_GLYPHS=unicode|ascii|auto`). While the TUI is open, logs go to `~/.arbiter/tui.log`.
+
+### Fixed
+- **The installer ships ONNX Runtime next to the binary.** `install.sh` and `cmake --install` put `arbiter`, `libopentui`, and `libonnxruntime` in `lib/arbiter` and symlink `bin/arbiter` there. The runtime search path is `$ORIGIN` on Linux and `@loader_path` on macOS, with no build-directory entry and no empty path component.
 
 ## [0.13.14] — 2026-10-14
 
@@ -16,15 +32,13 @@ The freeze is [docs/stability.md](docs/stability.md).
 ### Changed
 - **User echoes use the prompt color, and the input line is bare.** The rounded `user` box is gone. An echoed submit is `›` (`>` when glyphs are ASCII) with the text in that same color, and no block. The input line has neither the block nor the caret, and typed text uses that same color. Echoes wrap on word boundaries. Thinking stays a box: the title is the agent id in that agent's color plus a dim `thought`, and the collapsed body is one row (`^O` still expands it). A tool row splits the verb from the target. Successful output stays behind `^O`. A failed command always shows one `ERR:` line in the error color.
 - **Fleet rows are name-first.** A name is not cut below 8 cells; the tail is dropped first. The tail is a short verb or a token count, never a path. The selected row writes one detail line under the list, and that row is always reserved so the box does not resize. `j`/`k` move, Enter opens the agent, `Esc` only leaves focus, and `x` cancels.
+- **Sub-agents keep partial work when the tool loop hits its cap (#396).** A delegated turn used to drop text it had already produced and return `ERR:`. The parent now receives that text. If tool calls are still pending when the budget runs out, arbiter makes one more model call with tools disabled. The budget is `max_turns`, then `ARBITER_MAX_TURNS`, then 6 at depth 0 and 12 deeper. A plan continues after a capped phase.
 
 ## [0.13.13] — 2026-10-14
 
 ### Fixed
 - **TUI logs no longer paint over the input line.** While the interactive UI owns the terminal, stderr is appended to `~/.arbiter/tui.log` instead of the tty. That covers `openrouter_response`, `intent_route`, `intent_shadow`, and the other operational `fprintf` / `cerr` writers that were interleaving with the frame.
 - **Fleet pane sizes to its agents.** One row no longer takes about 40% of the right column. The list scrolls after 12 rows; Session, Agent, Todos, and Tools keep the remaining height.
-
-### Fixed
-- **TUI logs no longer paint over the input line.** While the interactive UI owns the terminal, stderr is appended to `~/.arbiter/tui.log` instead of the tty. That covers `openrouter_response`, `intent_route`, `intent_shadow`, and the other operational `fprintf` / `cerr` writers that were interleaving with the frame.
 
 ### Security
 - **Host `/exec` no longer runs through a shell by default.** Commands are split into argv and spawned with `posix_spawn`. Pipes, redirects, command substitution, and background jobs are destructive: they run under `/bin/sh -c` only after confirmation, and the HTTP API still denies them because its confirm callback cannot approve. An interpreter invoked on a file or program always requires confirmation too (`bash`/`sh`/`zsh`/`fish` scripts, `python`/`python3.12`, `node`/`nodejs`, `ruby`, `perl`, `php`, `lua`, `deno run`, `bun run`, `awk`/`gawk` programs, including absolute paths and `env python3 script.py`). `--version` alone does not. `--no-exec` still disables exec. `--allow-host-exec` still runs ordinary argv (`git status`, `ls`, `npm test`, `make`) without a prompt. `npm run` and `make` are package runners, not interpreters, so they stay unprompted. A TUI confirmation now actually runs the command; previously the host invoker asked `cmd_exec` again with confirmation off, so Allow still returned `ERR:`. Non-zero exits are reported as the process exit code (`[exit 1]`), not the raw wait status. Quoted metacharacters (`echo 'a|b'`) are data. `chmod`, `chown`, `tee`, and `xargs` always require confirmation. Bare `env` (it prints the environment) requires confirmation; `env git status` is classified as `git status`.
@@ -34,7 +48,7 @@ The freeze is [docs/stability.md](docs/stability.md).
 
 ### Changed
 - **Live intent routing returns before Luna.** With `ARBITER_INTENT_LIVE=luna`, a cached Luna decision is the route. Otherwise the local embedding model chooses the specialist on the request path, and a missing model uses `ARBITER_INTENT_DEFAULT_AGENT`. Luna runs in the background for a low-confidence embed or a missing model (budget `ARBITER_INTENT_LUNA_TIMEOUT_MS`, default 2000 ms, sized to live p50 1.0–1.4 s and p95 1.6–1.9 s). A successful result fills the decision cache and an `intent_decision` calibration row (request hash, embedding choice and probability, Luna choice and probability, latencies, final agent, later advisor verdict). `ARBITER_INTENT_LUNA_REROUTE` (default off) may swap the specialist when Luna has already finished and strongly disagrees, without changing the executor model.
-- - **State glyphs come from one table.** `ARBITER_GLYPHS=unicode` (the default on a UTF-8 locale) is the shape set: ● running, ○ pending, ◌ waiting, ✓ done, ✗ failed, ⊘ cancelled. Advisor consult / redirect / halt are ◆ / ↺ / ■, presence notes are ↳, JIT agents stay ◇, and an unfocused pane's activity badge is • so it no longer looks like a running agent. Schedules use ◷ instead of the wide ⏱. Markdown tasks use □ / ■, the same module as the todo sidebar. `ARBITER_GLYPHS=ascii` (also chosen automatically for `TERM=dumb` or a non-UTF-8 locale) is the ASCII-safe set. A cancelled fleet row is no longer drawn as a failure.
+- **State glyphs come from one table.** `ARBITER_GLYPHS=unicode` (the default on a UTF-8 locale) is the shape set: ● running, ○ pending, ◌ waiting, ✓ done, ✗ failed, ⊘ cancelled. Advisor consult / redirect / halt are ◆ / ↺ / ■, presence notes are ↳, JIT agents stay ◇, and an unfocused pane's activity badge is • so it no longer looks like a running agent. Schedules use ◷ instead of the wide ⏱. Markdown tasks use □ / ■, the same module as the todo sidebar. `ARBITER_GLYPHS=ascii` (also chosen automatically for `TERM=dumb` or a non-UTF-8 locale) is the ASCII-safe set. A cancelled fleet row is no longer drawn as a failure.
 
 ## [0.13.12] — 2026-10-13
 
