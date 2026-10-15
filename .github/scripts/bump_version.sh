@@ -260,6 +260,13 @@ def sub_one(path, pattern, repl, required=True):
     text = p.read_text(encoding="utf-8")
     new, n = re.subn(pattern, repl, text, count=1)
     if n != 1:
+        # required=False skips a missing file and a file that simply
+        # does not contain the pin. docs/getting-started/local.md ships
+        # ARBITER_VERSION=latest, which is not a numeric tag, and a
+        # prepare-release tree (1.0.0 already in CMakeLists) must still
+        # be able to tag. A required pin that does not match once is fatal.
+        if not required and n == 0:
+            return
         sys.exit(f"bump_version: failed to patch {path} ({n} matches)")
     p.write_text(new, encoding="utf-8")
 

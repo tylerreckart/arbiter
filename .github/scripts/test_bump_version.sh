@@ -203,6 +203,34 @@ make_fixture 0.12.0 0.12.0
 assert_eq "tag" "$(git tag --list 'v0.12.1')" "v0.12.1"
 assert_eq "subject" "$(git log -1 --format=%s)" "chore(release): v0.12.1"
 
+begin_case "latest install pin is left alone when cmake is already ahead"
+make_fixture 1.0.0 0.13.14
+python3 - <<'PY'
+from pathlib import Path
+local = Path("docs/getting-started/local.md")
+local.write_text(
+    "curl -fsSL https://example.com/install.sh | ARBITER_VERSION=latest sh\n"
+)
+changelog = Path("CHANGELOG.md")
+text = changelog.read_text()
+text = text.replace(
+    "## [Unreleased]\n\n### Added\n- New thing.\n",
+    "## [Unreleased]\n\n## [1.0.0] — 2026-10-15\n\nAlready cut.\n\n",
+)
+changelog.write_text(text)
+PY
+git add CHANGELOG.md docs/getting-started/local.md
+git commit -q -m "prepare 1.0.0"
+before="$(git rev-parse HEAD)"
+"$SCRIPT" --mode auto --no-tag >bump.out
+assert_eq "next" "$(out_field version bump.out)" "1.0.0"
+assert_eq "skipped" "$(out_field skipped bump.out)" "false"
+assert_file_contains "latest pin kept" docs/getting-started/local.md "ARBITER_VERSION=latest"
+assert_file_not_contains "did not invent a numeric pin" docs/getting-started/local.md "ARBITER_VERSION=v1.0.0"
+assert_eq "no release commit" "$(git rev-parse HEAD)" "$before"
+count="$(grep -c '## \[1.0.0\]' CHANGELOG.md || true)"
+assert_eq "single heading" "$count" "1"
+
 begin_case "no-tag commits without creating a tag"
 make_fixture 0.12.0 0.12.0
 "$SCRIPT" --mode auto --no-tag >bump.out
