@@ -25,8 +25,9 @@ When reporting, please include:
 
 - A clear description of the issue and its impact.
 - Steps to reproduce, ideally a minimal script or HTTP transcript.
-- The arbiter version (`arbiter --help` shows it on the bottom border;
-  also visible in `CMakeLists.txt`'s `project(... VERSION ...)`).
+- The arbiter version (`arbiter --version` or `arbiter -V`; the same
+  string is on the TUI bottom border and in `CMakeLists.txt`'s
+  `project(... VERSION ...)`).
 - Operating system and any non-default build flags.
 
 ## Supported versions
