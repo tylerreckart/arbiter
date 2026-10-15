@@ -59,6 +59,9 @@ std::string get_config_dir() {
         throw std::runtime_error("Cannot determine home directory: $HOME unset and getpwuid failed");
     std::string dir = std::string(home) + "/.arbiter";
     fs::create_directories(dir);
+    // Keys and the tenant database live here. 0700 even when umask is loose.
+    if (::chmod(dir.c_str(), 0700) != 0)
+        throw std::runtime_error("Cannot set permissions on " + dir);
     return dir;
 }
 

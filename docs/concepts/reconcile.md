@@ -139,4 +139,4 @@ TUI / `--send` do not call this path yet. Use [`POST /v1/reconcile`](../api/reco
 - [Presence](presence.md) — always-on residency; opposite of JIT
 - [Sandbox](sandbox.md)
 - [Durable execution](durable-execution.md)
-- ROADMAP Phase 5
+- [Stability](stability.md) — reconcile stays experimental past the 1.0 freeze

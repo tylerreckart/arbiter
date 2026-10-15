@@ -1,8 +1,9 @@
 # Contributing to arbiter
 
-Thanks for taking a look. Arbiter is pre-1.0 and the surface — slash
-commands, agent constitutions, SSE event shapes, the HTTP API — is still
-moving. PRs are welcome; please read this first.
+Thanks for taking a look. The surface 1.0 will freeze is
+[docs/stability.md](docs/stability.md). Until that tag, experimental
+areas (the HTTP API, tenants, A2A, reconcile, the scheduler, and voice)
+can still move. PRs are welcome; please read this first.
 
 ## Quick start
 
@@ -111,7 +112,7 @@ non-starter for merging.
 
 ## Versioning and releases
 
-Arbiter is pre-1.0 and treats a merge to `main` as a patch release
+A merge to `main` is a patch release
 (`0.12.2` → `0.12.3`). `main` requires pull requests, so `version.yml`
 opens a `chore/release-vX.Y.Z` PR (CMakeLists `INDEX_VERSION`,
 `CHANGELOG.md` `[Unreleased]` cut, docs install pin) rather than

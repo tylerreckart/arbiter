@@ -65,6 +65,7 @@ Deleting a folder unfiles its conversations (`folder_id` cleared) rather than ca
 
 | Field         | Type    | Notes |
 |---------------|---------|-------|
+| `version`     | int?    | Agent-file schema. Omit it and arbiter reads `1`. A present integer ≥ 1 is kept on save. See [Stability](stability.md). |
 | `id`          | string  | Caller-chosen identifier (typically a UUID), `[A-Za-z0-9_-]{1,64}`. |
 | `name`        | string  | Display name. |
 | `role`        | string  | Short role descriptor. |

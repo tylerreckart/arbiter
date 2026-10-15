@@ -139,6 +139,10 @@ For each setting, the order arbiter checks (first hit wins):
 
 ## Files under `~/.arbiter/`
 
+The directory is mode `0700`. `tenants.db` (and its `-wal` / `-shm`
+files) and `tui.log` are mode `0600`. The 1.0 freeze for this layout
+is [Stability](../stability.md).
+
 Distinct from env vars but listed here for completeness, since the env-vs-file precedence question is the most common operational confusion:
 
 | Path                       | Purpose                                                              |
