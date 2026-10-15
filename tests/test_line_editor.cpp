@@ -516,7 +516,9 @@ TEST_CASE("fn+up page up does not kill the session") {
     }
     const std::size_t before = s.output().size();
     s.send("still-alive");
-    CHECK(wait_for_plain_after(s, before, "still-alive", 5000));
+    // ASan on a busy runner can spend several seconds painting this
+    // page-up burst before the echo lands. A deadlock still fails.
+    CHECK(wait_for_plain_after(s, before, "still-alive", 15000));
     CHECK_FALSE(s.wait_exited(200));
 }
 
