@@ -120,7 +120,10 @@ std::string load_master_model_override() {
 
 std::string pick_master_model_default(
     const std::map<std::string, std::string>& keys) {
-    if (keys.count("openrouter")) return "~openai/gpt-latest";
+    // ~openai/gpt-latest is not on OpenRouter's public model list. Sol is
+    // the flagship line (gpt-6.1-sol and its predecessors); the
+    // ~openai/gpt-sol-latest alias tracks whichever Sol model is current.
+    if (keys.count("openrouter")) return "~openai/gpt-sol-latest";
     if (keys.count("anthropic")) return "anthropic/claude-sonnet-5";
     if (keys.count("openai"))    return "openai/gpt-5.5";
     return {};

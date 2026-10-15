@@ -33,11 +33,12 @@ somewhere other than `/usr/local/bin`. The binary and its libraries
 `INSTALL_DIR/arbiter` is a symlink to that binary. The script uses `sudo` only
 when the target directory is not writable.
 
-Pin a specific binary release (the script still comes from the repository;
-`ARBITER_VERSION` selects the tarball):
+Pin a binary release (the script still comes from the repository;
+`ARBITER_VERSION` selects the tarball). `latest` is the newest complete
+release. A specific tag looks like `ARBITER_VERSION=vX.Y.Z`.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tylerreckart/arbiter/main/install.sh | ARBITER_VERSION=v0.13.14 sh
+curl -fsSL https://raw.githubusercontent.com/tylerreckart/arbiter/main/install.sh | ARBITER_VERSION=latest sh
 ```
 
 ### From source
@@ -76,7 +77,7 @@ Try this first:
 For scripts and CI hooks:
 
 ```bash
-arbiter --send reviewer "review: if (arr.length = 0) return;"
+arbiter --send vera "review: if (arr.length = 0) return;"
 ```
 
 The agent runs the full orchestration loop internally — tool calls, sub-agent delegation, advisor gating — and prints the final reply on stdout. See [`cli/send.md`](../cli/send.md).
