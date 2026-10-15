@@ -29,10 +29,27 @@ function(arbiter_link_onnxruntime target)
     endif()
     target_include_directories(${target} PRIVATE "${ARBITER_ONNXRUNTIME_INCLUDE}")
     target_link_libraries(${target} PRIVATE "${ARBITER_ONNXRUNTIME_LIB}")
-    set_property(TARGET ${target} APPEND PROPERTY BUILD_RPATH "${ARBITER_ONNXRUNTIME_LIBDIR}")
+    # Do not append the fetch directory to RPATH. The binary's runtime
+    # path is only $ORIGIN / @loader_path, and the library is staged
+    # beside the executable (see arbiter_stage_onnxruntime).
     target_compile_definitions(${target} PRIVATE
         ARBITER_EMBED_MODEL_PATH="${ARBITER_EMBED_MODEL_PATH}"
         ARBITER_EMBED_VOCAB_PATH="${ARBITER_EMBED_VOCAB_PATH}")
+endfunction()
+
+# Place libonnxruntime next to `target` so a same-directory runtime path
+# resolves it in the build tree, the release tarball, and install.sh.
+function(arbiter_stage_onnxruntime target)
+    if(NOT ARBITER_HAS_ONNXRUNTIME)
+        return()
+    endif()
+    add_custom_command(TARGET ${target} POST_BUILD
+        COMMAND ${CMAKE_COMMAND}
+            -DSRC=${ARBITER_ONNXRUNTIME_LIBDIR}
+            -DDEST=$<TARGET_FILE_DIR:${target}>
+            -P ${CMAKE_SOURCE_DIR}/cmake/stage_onnxruntime.cmake
+        COMMENT "Staging ONNX Runtime next to ${target}"
+        VERBATIM)
 endfunction()
 
 file(READ "${CMAKE_SOURCE_DIR}/include/embed_pins.h" ARBITER_EMBED_PINS_TEXT)

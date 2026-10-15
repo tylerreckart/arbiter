@@ -147,8 +147,10 @@ TuiStderrRedirect::TuiStderrRedirect(const std::string& config_dir) {
     path_ = config_dir + "/tui.log";
     // get_config_dir() already creates this; mkdir covers tests and a
     // race where the directory disappeared between startup and the TUI.
-    if (::mkdir(config_dir.c_str(), 0755) != 0 && errno != EEXIST) {
+    if (::mkdir(config_dir.c_str(), 0700) != 0 && errno != EEXIST) {
         // Still try the open — the directory may already be usable.
+    } else {
+        ::chmod(config_dir.c_str(), 0700);
     }
     std::fflush(stderr);
     std::fflush(stdout);
@@ -160,7 +162,8 @@ TuiStderrRedirect::TuiStderrRedirect(const std::string& config_dir) {
     } else {
         flags |= O_APPEND;
     }
-    const int log_fd = ::open(path_.c_str(), flags, 0644);
+    const int log_fd = ::open(path_.c_str(), flags, 0600);
+    if (log_fd >= 0) ::fchmod(log_fd, 0600);
     if (log_fd < 0) return;
     saved_fd_ = ::dup(STDERR_FILENO);
     if (saved_fd_ < 0) {

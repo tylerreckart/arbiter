@@ -1260,6 +1260,7 @@ Constitution master_constitution() {
 std::string Constitution::to_json() const {
     auto obj = jobj();
     auto& m = obj->as_object_mut();
+    m["version"]     = jnum(static_cast<double>(version < 1 ? 1 : version));
     m["name"]        = jstr(name);
     m["role"]        = jstr(role);
     m["personality"]  = jstr(personality);
@@ -1407,6 +1408,10 @@ std::string Constitution::to_json() const {
 Constitution Constitution::from_json(const std::string& json_str) {
     auto root = json_parse(json_str);
     Constitution c;
+    if (auto ver = root->get("version"); ver && ver->is_number()) {
+        const int n = static_cast<int>(ver->as_number());
+        if (n >= 1) c.version = n;
+    }
     c.name          = root->get_string("name");
     c.role          = root->get_string("role");
     c.personality   = root->get_string("personality");

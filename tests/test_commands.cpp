@@ -264,6 +264,10 @@ TEST_CASE("is_destructive_exec confirms interpreter scripts") {
     CHECK(is_destructive_exec("lua script.lua"));
     CHECK(is_destructive_exec("deno run file.ts"));
     CHECK(is_destructive_exec("bun run file.ts"));
+    CHECK(is_destructive_exec("go run main.go"));
+    CHECK(is_destructive_exec("go run ."));
+    CHECK(is_destructive_exec("go -C /tmp run main.go"));
+    CHECK(is_destructive_exec("env go run main.go"));
     CHECK(is_destructive_exec("awk '{system(\"rm\")}'"));
     CHECK(is_destructive_exec("gawk -f prog.awk"));
     CHECK(is_destructive_exec("nawk '{print}'"));
@@ -287,6 +291,10 @@ TEST_CASE("is_destructive_exec confirms interpreter scripts") {
     CHECK_FALSE(is_destructive_exec("git status"));
     CHECK_FALSE(is_destructive_exec("env git status"));
     CHECK_FALSE(is_destructive_exec("env PATH=/usr/bin git diff"));
+    CHECK_FALSE(is_destructive_exec("go test"));
+    CHECK_FALSE(is_destructive_exec("go build"));
+    CHECK_FALSE(is_destructive_exec("go version"));
+    CHECK_FALSE(is_destructive_exec("go -C /tmp test"));
 }
 
 TEST_CASE("cmd_exec does not pass unconfirmed commands through a shell") {

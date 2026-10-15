@@ -49,9 +49,13 @@ jobs:
           chmod +x .github/scripts/bump_version.sh \
                    .github/scripts/test_bump_version.sh \
                    .github/scripts/require_ci_success.sh \
-                   .github/scripts/test_require_ci_success.sh
+                   .github/scripts/test_require_ci_success.sh \
+                   .github/scripts/test_install_layout.sh \
+                   install.sh
           .github/scripts/test_bump_version.sh
           .github/scripts/test_require_ci_success.sh
+          .github/scripts/test_install_layout.sh
+          python3 .github/scripts/check_openrouter_models.py
 
   build_and_test:
     name: ${{ matrix.os_slug }}-${{ matrix.arch_slug }}
@@ -183,6 +187,7 @@ jobs:
             OPENTUI_LIB=libopentui.so
           fi
           .github/scripts/portable_release.sh smoke "${NAME}" "${OPENTUI_LIB}"
+          .github/scripts/portable_release.sh install-smoke "${NAME}" "${OPENTUI_LIB}"
 
   # Sanitizer coverage is Linux-only.  macOS ASan cannot detect leaks
   # ("detect_leaks is not supported on this platform"), and ASan/TSan

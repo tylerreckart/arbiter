@@ -15,6 +15,7 @@
 #include <curl/curl.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -387,14 +388,31 @@ std::size_t write_body(char* ptr, std::size_t size, std::size_t nmemb, void* ud)
     return bytes;
 }
 
+struct DownloadProgress {
+    int last_pct = -1;
+};
+
+int download_progress(void* clientp, curl_off_t dltotal, curl_off_t dlnow,
+                      curl_off_t, curl_off_t) {
+    if (!clientp || dltotal <= 0 || dlnow < 0) return 0;
+    auto* st = static_cast<DownloadProgress*>(clientp);
+    const int pct = static_cast<int>((dlnow * 100) / dltotal);
+    if (pct == st->last_pct) return 0;
+    st->last_pct = pct;
+    std::fprintf(stderr, "\rDownloading routing model... %3d%%", pct);
+    if (pct >= 100) std::fputc('\n', stderr);
+    return 0;
+}
+
 bool download_verified(const char* url, const std::string& dest, const char* sha,
-                       std::string& error) {
+                       std::string& error, bool show_progress) {
     std::string body;
     CURL* curl = curl_easy_init();
     if (!curl) {
         error = "curl init failed";
         return false;
     }
+    DownloadProgress progress;
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
@@ -402,8 +420,15 @@ bool download_verified(const char* url, const std::string& dest, const char* sha
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 180L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "arbiter-embed-fetch/1.0");
+    if (show_progress) {
+        curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+        curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, download_progress);
+        curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &progress);
+    }
     const CURLcode rc = curl_easy_perform(curl);
     curl_easy_cleanup(curl);
+    if (show_progress && progress.last_pct >= 0 && progress.last_pct < 100)
+        std::fputc('\n', stderr);
     if (rc != CURLE_OK) {
         error = curl_easy_strerror(rc);
         return false;
@@ -762,6 +787,12 @@ EmbedAssetPaths resolve_embed_assets() {
         return out;
     }
     if (env_disabled("ARBITER_OFFLINE") || env_disabled("ARBITER_EMBED_NO_FETCH")) {
+        static std::atomic<bool> noted{false};
+        if (!noted.exchange(true, std::memory_order_relaxed)) {
+            std::fprintf(stderr,
+                "Routing model is not installed and downloads are disabled. "
+                "Using the heuristic router.\n");
+        }
         out.error = "embedding model absent and fetch is disabled";
         return out;
     }
@@ -770,13 +801,23 @@ EmbedAssetPaths resolve_embed_assets() {
         return out;
     }
     std::string error;
-    if (!matches_pin(model, kEmbedModelSha256) &&
-        !download_verified(kEmbedModelUrl, model, kEmbedModelSha256, error)) {
-        out.error = error.empty() ? "model download failed" : error;
-        return out;
+    if (!matches_pin(model, kEmbedModelSha256)) {
+        std::fprintf(stderr,
+            "Downloading routing model (bge-small-en-v1.5, 34 MB). "
+            "This is stored under ~/.cache/arbiter and happens once.\n");
+        if (!download_verified(kEmbedModelUrl, model, kEmbedModelSha256, error, true)) {
+            std::fprintf(stderr,
+                "Could not download the routing model (%s). Using the heuristic router.\n",
+                error.empty() ? "download failed" : error.c_str());
+            out.error = error.empty() ? "model download failed" : error;
+            return out;
+        }
     }
     if (!matches_pin(vocab, kEmbedVocabSha256) &&
-        !download_verified(kEmbedVocabUrl, vocab, kEmbedVocabSha256, error)) {
+        !download_verified(kEmbedVocabUrl, vocab, kEmbedVocabSha256, error, false)) {
+        std::fprintf(stderr,
+            "Could not download the routing model (%s). Using the heuristic router.\n",
+            error.empty() ? "vocab download failed" : error.c_str());
         out.error = error.empty() ? "vocab download failed" : error;
         return out;
     }

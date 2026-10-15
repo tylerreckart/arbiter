@@ -59,6 +59,9 @@ std::string get_config_dir() {
         throw std::runtime_error("Cannot determine home directory: $HOME unset and getpwuid failed");
     std::string dir = std::string(home) + "/.arbiter";
     fs::create_directories(dir);
+    // Keys and the tenant database live here. 0700 even when umask is loose.
+    if (::chmod(dir.c_str(), 0700) != 0)
+        throw std::runtime_error("Cannot set permissions on " + dir);
     return dir;
 }
 
@@ -180,7 +183,7 @@ struct ModelOption {
 std::vector<ModelOption> wizard_model_options() {
     // Stable wizard order (not full catalogue order).
     static constexpr const char* kRecommendedIds[] = {
-        "~openai/gpt-latest",
+        "~openai/gpt-sol-latest",
         "anthropic/claude-sonnet-5",
         "openai/gpt-5.5",
         "google/gemini-3.6-flash",

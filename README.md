@@ -52,14 +52,15 @@ Linux binaries, source builds, Ollama, `--send`, `--api`, and `--connect` are in
 - [`docs/api/`](docs/api/index.md) — HTTP API, tenants, SSE, MCP, A2A, memory
 - [`docs/cli/`](docs/cli/index.md) — `--init`, `--send`, `--api`, `--connect`, env vars
 - [`docs/tui/`](docs/tui/index.md) — panes, keybindings, themes, sessions
-- [`ROADMAP.md`](ROADMAP.md) — phased plan toward 1.0 readiness
+- [`docs/stability.md`](docs/stability.md) — what 1.0 will freeze
 - [`CHANGELOG.md`](CHANGELOG.md) · [`CONTRIBUTING.md`](CONTRIBUTING.md) · [`SECURITY.md`](SECURITY.md)
 
 > [!WARNING]
 >
-> Arbiter is experimental software and has not reached a stable v1.0.
-> The event surface, agent constitutions, and HTTP shape are subject to
-> change. TUI `/exec` is [unsandboxed by default](docs/concepts/sandbox.md)
-> (confirm-gated host shell; set `ARBITER_SANDBOX_IMAGE` for Docker). 
+> Arbiter is preparing a 1.0 freeze. The contract that tag will keep
+> stable is [docs/stability.md](docs/stability.md). Until that tag,
+> anything that page marks experimental can still change. TUI `/exec`
+> is [unsandboxed by default](docs/concepts/sandbox.md) (confirm-gated
+> host shell; set `ARBITER_SANDBOX_IMAGE` for Docker). 
 
 Licensed under the [Apache License 2.0](LICENSE).

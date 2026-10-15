@@ -9,6 +9,7 @@ Arbiter is a single binary with three operating modes — interactive, one-shot,
 | One agent reply, piped output, no TTY                | `arbiter --send <agent> <message>`           |
 | HTTP+SSE orchestration server for other clients      | `arbiter --api [--port N] [--bind ADDR]`     |
 | Initialize `~/.arbiter/` with example agents         | `arbiter --init`                             |
+| Print the build version                              | `arbiter --version` or `arbiter -V`          |
 | Configure `/search`, `/browse`, and MCP servers      | `arbiter --setup-tools`                      |
 | Manage `--api` tenant identities                     | `arbiter --add-tenant`, `--list-tenants`, `--disable-tenant`, `--enable-tenant` |
 
@@ -28,6 +29,7 @@ arbiter --add-tenant <name>                Provision a tenant + API key
 arbiter --list-tenants                     Print active and disabled tenants
 arbiter --disable-tenant <id|name>         Revoke a tenant's access
 arbiter --enable-tenant <id|name>          Restore access
+arbiter --version, -V                      Print the build version
 arbiter --help                             Print built-in help
 ```
 
@@ -51,8 +53,8 @@ arbiter --help                             Print built-in help
 **One-shot (`--send`).** No TTY, no panes, no streaming. Sends one message to one agent, prints the reply on stdout, exits non-zero on error. Built for scripts and pipelines:
 
 ```bash
-echo "$DIFF" | arbiter --send reviewer "$(cat)"
-arbiter --send research "summarise the top 3 issues" > /tmp/summary.md
+echo "$DIFF" | arbiter --send vera "$(cat)"
+arbiter --send scout "summarise the top 3 issues" > /tmp/summary.md
 ```
 
 The agent runs the full orchestration loop internally (tool calls, sub-agent delegation) — you just don't see the intermediate steps; you see the final synthesised reply.

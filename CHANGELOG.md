@@ -2,8 +2,9 @@
 
 All notable changes to arbiter are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project
-follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
-loosely while pre-1.0 (breaking changes can land on minor bumps).
+follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+Until the 1.0 tag, breaking changes can still land on minor bumps.
+The freeze is [docs/stability.md](docs/stability.md).
 
 ## [Unreleased]
 
@@ -929,8 +930,8 @@ Covenant, issue templates) and a refreshed roadmap toward 1.0.
   background timer (default 30s, `ARBITER_AUTOSAVE_INTERVAL_SEC`; `0`
   disables the tick). Post-turn `save_async` remains immediate.
 - **Contributor Covenant Code of Conduct.**
-- **Phased roadmap toward 1.0.** Feature audit and phased `ROADMAP.md`
-  (with a README pointer).
+- **Phased plan toward 1.0.** Feature audit, recorded in the changelog
+  and the README.
 
 ### Changed
 - **Multi-conversation autosave queue.** `ConversationStore::save_async`

@@ -1,8 +1,9 @@
 # Contributing to arbiter
 
-Thanks for taking a look. Arbiter is pre-1.0 and the surface — slash
-commands, agent constitutions, SSE event shapes, the HTTP API — is still
-moving. PRs are welcome; please read this first.
+Thanks for taking a look. The surface 1.0 will freeze is
+[docs/stability.md](docs/stability.md). Until that tag, experimental
+areas (the HTTP API, tenants, A2A, reconcile, the scheduler, and voice)
+can still move. PRs are welcome; please read this first.
 
 ## Quick start
 
@@ -111,25 +112,14 @@ non-starter for merging.
 
 ## Versioning and releases
 
-A merge to `main` is a patch release (`0.13.14` → `0.13.15`) unless
-the pull request already set `project(arbiter VERSION …)` higher than
-the latest tag. `main` requires pull requests, so `version.yml` opens
-a `chore/release-vX.Y.Z` PR (CMakeLists, `CHANGELOG.md` `[Unreleased]`
-cut, docs install pin) rather than pushing to `main`.
+A merge to `main` is a patch release
+(`0.12.2` → `0.12.3`). `main` requires pull requests, so `version.yml`
+opens a `chore/release-vX.Y.Z` PR (CMakeLists `INDEX_VERSION`,
+`CHANGELOG.md` `[Unreleased]` cut, docs install pin) rather than
+pushing to `main`. Squash-merging that PR tags `vX.Y.Z` and
+dispatches the binary release.
 
-**1.0.0 is a normal pull request** that changes that line to
-`project(arbiter VERSION 1.0.0)`. Do not use Actions → Version bump →
-major. After the PR merges and CI is green on the squash commit, the
-version workflow tags `v1.0.0` and dispatches the binary release. It
-does not open a second release PR for a version already in CMakeLists.
-
-Bot-opened release PRs are squash-merged from `version.yml`. Those
-pushes use `GITHUB_TOKEN`, which does not start workflows. The version
-job dispatches `ci.yml` on the release branch, waits, merges, dispatches
-`ci.yml` on the squash commit, waits, then tags. A human merge of the
-same PR starts CI by itself; the workflow tags once that run is green.
-
-Leave the version number alone in ordinary feature PRs. Notes go under
+Leave the version number alone in ordinary PRs. Notes go under
 `[Unreleased]`; the bump job cuts them on merge.
 
 The Actions repo setting **Allow GitHub Actions to create and approve
