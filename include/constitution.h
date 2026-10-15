@@ -18,6 +18,10 @@ namespace arbiter {
 enum class Brevity { Lite, Full, Ultra };
 
 struct Constitution {
+    // Agent-file schema. Absent on disk means 1. Writers emit the number
+    // they read, so a newer file is not silently rewritten as 1.
+    int version = 1;
+
     // --- Core identity ---
     std::string name;
     std::string role;               // e.g. "code-reviewer", "research-analyst", "infrastructure-engineer"

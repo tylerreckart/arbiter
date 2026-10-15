@@ -1569,6 +1569,23 @@ bool unwrap_env(const std::vector<std::string>& argv, std::vector<std::string>& 
     return !out.empty() && !out[0].empty();
 }
 
+// `go run` compiles and executes source. `-C dir` is a global flag that
+// may sit in front of the subcommand. Other go subcommands stay quiet.
+bool go_run_executes(const std::vector<std::string>& argv) {
+    if (argv.empty() || exec_basename(argv[0]) != "go") return false;
+    for (size_t i = 1; i < argv.size(); ++i) {
+        const std::string& a = argv[i];
+        if (a == "-C") {
+            ++i;
+            continue;
+        }
+        if (a.rfind("-C=", 0) == 0) continue;
+        if (!a.empty() && a[0] == '-') continue;
+        return a == "run";
+    }
+    return false;
+}
+
 bool argv_is_destructive(const std::vector<std::string>& argv) {
     if (argv.empty()) return true;
 
@@ -1598,6 +1615,9 @@ bool argv_is_destructive(const std::vector<std::string>& argv) {
     if (base.rfind("mkfs", 0) == 0) return true;
 
     if (interpreter_runs_program(cur)) return true;
+    // `go run` executes a program. `go build`, `go test`, and `go version`
+    // do not, so go is not an interpreter for every subcommand.
+    if (go_run_executes(cur)) return true;
 
     if (base == "curl" || base == "wget") {
         for (size_t i = 1; i < cur.size(); ++i) {

@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -26,6 +27,7 @@
 #include <openssl/rand.h>
 #include <openssl/sha.h>
 #include <sqlite3.h>
+#include <sys/stat.h>
 
 namespace arbiter {
 
@@ -344,6 +346,46 @@ Tenant row_to_tenant(Stmt& q) {
 constexpr const char* kTenantCols =
     "id, api_key_hash, name, disabled, created_at, last_used_at";
 
+// Schema marker. 1 is the FTS rebuild that used to live inline in open().
+// A later migration appends another step and raises this number; it does
+// not rewrite databases that are already current.
+constexpr int kSchemaVersion = 1;
+
+void migrate_schema(sqlite3* db) {
+    Stmt q(db, "PRAGMA user_version;");
+    const int64_t v = (q.step() == SQLITE_ROW) ? q.column_int64(0) : 0;
+    if (v >= kSchemaVersion) return;
+
+    // One-shot rebuild for DBs that pre-date the FTS table. Triggers
+    // catch every future write; this fills the index for rows that
+    // already existed.
+    //
+    // Detection uses PRAGMA user_version rather than a COUNT(*) probe:
+    // an external-content FTS5 table delegates COUNT(*) to the source
+    // table, so it always reports the source row count, never zero,
+    // even when the inverted index is empty. user_version defaults to
+    // 0 on every fresh-or-pre-migration DB.
+    if (v < 1) {
+        exec_sql(db,
+            "INSERT INTO memory_entries_fts(memory_entries_fts) "
+            "VALUES('rebuild');");
+        exec_sql(db, "PRAGMA user_version = 1;");
+    }
+}
+
+void restrict_store_files(const std::string& path) {
+    if (path.empty() || path == ":memory:" || path.rfind("file:", 0) == 0)
+        return;
+    auto tighten = [](const std::string& p) {
+        if (::chmod(p.c_str(), 0600) != 0 && errno != ENOENT) {
+            // A missing -wal/-shm is normal before the first write.
+        }
+    };
+    tighten(path);
+    tighten(path + "-wal");
+    tighten(path + "-shm");
+}
+
 } // namespace
 
 // ─── TenantStore ────────────────────────────────────────────────────────────
@@ -369,6 +411,7 @@ void TenantStore::open(const std::string& path) {
         db_ = nullptr;
         throw std::runtime_error(msg);
     }
+    restrict_store_files(path);
     register_conn_lock(db_, &write_mu_);
 
     // WAL gives us concurrent readers while the writer appends.
@@ -767,26 +810,9 @@ void TenantStore::open(const std::string& path) {
         END;
     )SQL");
 
-    // One-shot rebuild for DBs that pre-date the FTS table.  Triggers
-    // catch every future write; this fills the index for rows that
-    // already existed.
-    //
-    // Detection uses PRAGMA user_version rather than a COUNT(*) probe:
-    // an external-content FTS5 table delegates COUNT(*) to the source
-    // table, so it always reports the source row count, never zero,
-    // even when the inverted index is empty.  user_version defaults to
-    // 0 on every fresh-or-pre-migration DB; we bump to 1 once after a
-    // successful rebuild and skip on subsequent opens.
-    {
-        Stmt q(db_, "PRAGMA user_version;");
-        int64_t v = (q.step() == SQLITE_ROW) ? q.column_int64(0) : 0;
-        if (v < 1) {
-            exec_sql(db_,
-                "INSERT INTO memory_entries_fts(memory_entries_fts) "
-                "VALUES('rebuild');");
-            exec_sql(db_, "PRAGMA user_version = 1;");
-        }
-    }
+    // FTS table and triggers exist above. migrate_schema owns user_version.
+    migrate_schema(db_);
+    restrict_store_files(path);
 
     // ── Per-tenant agent catalog (added in v6) ─────────────────────────
     // Stores agent_def blobs sent from the front-end so callers can
@@ -1189,6 +1215,7 @@ void TenantStore::open(const std::string& path) {
         CREATE INDEX IF NOT EXISTS admin_audit_ts
             ON admin_audit(ts DESC, id DESC);
     )SQL");
+    restrict_store_files(path);
 }
 
 TenantStore::CreatedTenant

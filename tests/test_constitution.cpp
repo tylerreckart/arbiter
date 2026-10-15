@@ -257,6 +257,20 @@ TEST_CASE("intent: absent yields file-agent defaults (mode off)") {
     CHECK(c.intent.min_confidence == doctest::Approx(0.8));
 }
 
+TEST_CASE("agent file version defaults to 1 and round-trips") {
+    auto bare = Constitution::from_json(R"({"name":"scout","model":"ollama/scout"})");
+    CHECK(bare.version == 1);
+    CHECK(bare.to_json().find("\"version\":1") != std::string::npos);
+
+    auto again = Constitution::from_json(bare.to_json());
+    CHECK(again.version == 1);
+
+    auto newer = Constitution::from_json(
+        R"({"name":"scout","version":3,"model":"ollama/scout"})");
+    CHECK(newer.version == 3);
+    CHECK(Constitution::from_json(newer.to_json()).version == 3);
+}
+
 TEST_CASE("max_turns is optional and round-trips when set") {
     auto bare = Constitution::from_json(R"({"name":"scout","model":"ollama/scout"})");
     CHECK_FALSE(bare.max_turns.has_value());

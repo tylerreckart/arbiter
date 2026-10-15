@@ -31,13 +31,14 @@ When reporting, please include:
 
 ## Supported versions
 
-Arbiter is pre-1.0 and ships frequent breaking changes. We provide
-security fixes for:
+Security fixes ship for:
 
-- The latest tagged release on `main`.
+- The latest tagged release.
 - The current `main` branch.
 
-Older tags do **not** receive backports.
+The 1.0 stability contract is [docs/stability.md](docs/stability.md).
+That page is what the 1.0 tag will freeze. Older tags do **not**
+receive backports.
 
 ## In-scope
 
@@ -66,7 +67,7 @@ that simply demonstrate them are not vulnerabilities:
   argv runs directly with the user's permissions (`posix_spawn`, no
   shell). Pipes, redirects, substitution, and any interpreter running a
   file or program (`bash script.sh`, `python3.12 script.py`, `node
-  script.js`, `awk`, `deno run`, including via `env` or an absolute
+  script.js`, `awk`, `deno run`, `go run`, including via `env` or an absolute
   path) require a `HOST SHELL (unsandboxed)` confirm card, and are
   refused when the caller cannot approve them. Set `ARBITER_SANDBOX_IMAGE` to opt into
   the same Docker sandbox as `--api`. The HTTP API (`arbiter --api`)
