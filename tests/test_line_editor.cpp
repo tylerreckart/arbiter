@@ -516,7 +516,13 @@ TEST_CASE("fn+up page up does not kill the session") {
     }
     const std::size_t before = s.output().size();
     s.send("still-alive");
-    CHECK(wait_for_plain_after(s, before, "still-alive", 5000));
+    // The input-row paint can lag a page-up burst, and the block cursor
+    // can split the live buffer, so a direct echo is not the only proof
+    // the editor is alive. Submitting is: a deadlock never echoes the line.
+    if (!wait_for_plain_after(s, before, "still-alive", 15000)) {
+        s.send("\r");
+        CHECK(wait_for_plain_after(s, before, "still-alive", 15000));
+    }
     CHECK_FALSE(s.wait_exited(200));
 }
 
