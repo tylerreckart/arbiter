@@ -11,6 +11,7 @@ usage:
   portable_release.sh configure <build-dir>
   portable_release.sh package <build-dir> <os-slug> <arch-slug>
   portable_release.sh smoke <tarball-name> <opentui-lib-basename>
+  portable_release.sh install-smoke <tarball-name> <opentui-lib-basename>
 EOF
   exit 2
 }
@@ -117,6 +118,7 @@ cmd_package() {
 
   mkdir -p "${stage}"
   install -m 755 "${build_dir}/arbiter" "${stage}/arbiter"
+  normalize_macho_load_paths "${stage}/arbiter"
   stage_onnxruntime "${build_dir}" "${stage}"
   if [ ! -f "${build_dir}/${opentui_lib}" ]; then
     echo "portable_release: missing staged OpenTUI library: ${build_dir}/${opentui_lib}" >&2
@@ -141,6 +143,39 @@ cmd_package() {
     } >> "${GITHUB_OUTPUT}"
   fi
   echo "portable_release: packaged ${name}.tar.gz (+ ${opentui_lib})"
+}
+
+# ONNX Runtime and OpenTUI must load from @loader_path. An absolute
+# install name (the fetch directory) ignores LC_RPATH. Rewrite those
+# load commands and leave a single @loader_path rpath.
+normalize_macho_load_paths() {
+  local bin="$1"
+  if [ "$(uname -s)" != "Darwin" ]; then
+    return 0
+  fi
+  local dep base
+  while IFS= read -r dep; do
+    case "${dep}" in
+      @*) continue ;;
+      *onnxruntime*|*opentui*)
+        base="$(basename "${dep}")"
+        install_name_tool -change "${dep}" "@loader_path/${base}" "${bin}"
+        ;;
+    esac
+  done < <(otool -L "${bin}" | awk 'NR>1 { print $1 }')
+
+  local path had_loader=0
+  while IFS= read -r path; do
+    [ -n "${path}" ] || continue
+    if [ "${path}" = "@loader_path" ]; then
+      had_loader=1
+      continue
+    fi
+    install_name_tool -delete_rpath "${path}" "${bin}"
+  done < <(otool -l "${bin}" | awk '/cmd LC_RPATH/{p=1} p && $1=="path"{print $2; p=0}')
+  if [ "${had_loader}" -eq 0 ]; then
+    install_name_tool -add_rpath "@loader_path" "${bin}"
+  fi
 }
 
 cmd_smoke() {
@@ -168,11 +203,24 @@ cmd_smoke() {
       exit 1
     fi
     grep -E '@(loader_path|rpath)/libopentui\.dylib' /tmp/arbiter-otool.txt
+    local rpath
+    rpath="$(otool -l "${smoke}/arbiter" | awk '/cmd LC_RPATH/{p=1} p && $1=="path"{print $2; p=0}')"
+    if [ "${rpath}" != "@loader_path" ]; then
+      echo "portable check failed: LC_RPATH must be only @loader_path, got:" >&2
+      printf '%s\n' "${rpath}" >&2
+      exit 1
+    fi
   else
     echo "readelf deps:"
     readelf -d "${smoke}/arbiter" | tee /tmp/arbiter-readelf.txt
-    if grep -E 'RPATH|RUNPATH' /tmp/arbiter-readelf.txt | grep -E '/home/runner|/opt/'; then
+    if grep -E 'RPATH|RUNPATH' /tmp/arbiter-readelf.txt | grep -E '/home/runner|/opt/|embed-fetch|/opentui'; then
       echo "portable check failed: non-portable RUNPATH/RPATH" >&2
+      exit 1
+    fi
+    local rp
+    rp="$(sed -n 's/.*\(RPATH\|RUNPATH\).*\[\(.*\)\]/\2/p' /tmp/arbiter-readelf.txt)"
+    if [ "${rp}" != '$ORIGIN' ]; then
+      echo "portable check failed: runtime path must be exactly \$ORIGIN, got: ${rp}" >&2
       exit 1
     fi
     # ldd prints absolute resolved paths (often under /home/runner/work/_temp
@@ -213,14 +261,43 @@ cmd_smoke() {
   echo "smoke: --help exit 0 (portable extract)"
 }
 
+# Install the packaged tarball with install.sh into a temp prefix and run
+# the installed command. Proves shared libraries are copied, not only that
+# the extracted archive starts.
+cmd_install_smoke() {
+  local name="${1:?tarball-name required}"
+  local opentui_lib="${2:?opentui-lib required}"
+  local root
+  root="$(mktemp -d "${TMPDIR:-/tmp}/arbiter-install.XXXXXX")"
+  if [ ! -f "${name}.tar.gz" ] || [ ! -f "${name}.tar.gz.sha256" ]; then
+    echo "install-smoke: missing ${name}.tar.gz or its .sha256" >&2
+    exit 1
+  fi
+  ARBITER_TARBALL="${PWD}/${name}.tar.gz" INSTALL_DIR="${root}/bin" \
+    sh ./install.sh
+  test -L "${root}/bin/arbiter"
+  test -x "${root}/lib/arbiter/arbiter"
+  test -f "${root}/lib/arbiter/${opentui_lib}"
+  if tar -tzf "${name}.tar.gz" | grep -q 'libonnxruntime'; then
+    if [ "$(uname -s)" = "Darwin" ]; then
+      test -e "${root}/lib/arbiter/libonnxruntime.1.dylib"
+    else
+      test -e "${root}/lib/arbiter/libonnxruntime.so.1"
+    fi
+  fi
+  "${root}/bin/arbiter" --help >/dev/null
+  echo "install-smoke: installed binary --help exit 0 (${root}/bin/arbiter)"
+}
+
 main() {
   local cmd="${1:-}"
   shift || true
   case "${cmd}" in
-    configure) cmd_configure "$@" ;;
-    package)   cmd_package "$@" ;;
-    smoke)     cmd_smoke "$@" ;;
-    *)         usage ;;
+    configure)     cmd_configure "$@" ;;
+    package)       cmd_package "$@" ;;
+    smoke)         cmd_smoke "$@" ;;
+    install-smoke) cmd_install_smoke "$@" ;;
+    *)             usage ;;
   esac
 }
 

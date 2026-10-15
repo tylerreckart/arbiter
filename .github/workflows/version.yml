@@ -23,10 +23,22 @@ name: Version bump
 #   the pull-request ruleset.  release.yml checks CI again on the
 #   tagged commit.
 #
-# Auto cuts a patch (0.12.2 → 0.12.3).  Minor / major:
-#   - Actions → Version bump → minor / major / explicit X.Y.Z
-#   - Or bump `project(arbiter VERSION …)` in the PR; on merge this
-#     workflow tags that version instead of auto-patching
+# Auto cuts a patch (0.13.14 → 0.13.15).
+#
+# 1.0.0 is a normal pull request that sets
+# `project(arbiter VERSION 1.0.0)`. Do not use Actions → Version bump
+# → major for that. After the PR merges and CI is green on that main
+# SHA, this workflow tags v1.0.0 (cmake is already ahead of the latest
+# tag, so it does not open another release PR).
+#
+# Bot release PRs (`chore(release): vX.Y.Z`) are pushed and squash-merged
+# with GITHUB_TOKEN. Those events do not start CI. This job dispatches
+# ci.yml on the release branch, waits, squash-merges, dispatches ci.yml
+# on the squash SHA, waits, then tags. Tagging checks the tag again
+# immediately before `git tag` so a second run does not create it twice.
+#
+# Other cuts:
+#   - Actions → Version bump → minor / explicit X.Y.Z (not the 1.0 path)
 #   - `[skip version]` skips entirely (push-driven runs only)
 #   - `git tag vX.Y.Z && git push origin vX.Y.Z` still fires
 #     release.yml on its own; that workflow refuses a commit CI
@@ -73,7 +85,9 @@ jobs:
   bump:
     name: Cut version
     runs-on: ubuntu-22.04
-    timeout-minutes: 10
+    # Two full CI waits (release branch, then the squash SHA on main).
+    # TSan's own job budget is 60 minutes, and the waits are serial.
+    timeout-minutes: 150
     if: >
       github.event_name == 'workflow_dispatch' ||
       (
@@ -173,19 +187,65 @@ jobs:
           MAIN_SHA="$(git rev-parse origin/main)"
           HEAD_SHA="$(git rev-parse HEAD)"
 
-          # Version files already on main (release PR just merged, or a
-          # prepare-release PR bumped CMakeLists).  Tag that commit —
-          # allowed even when main forbids direct pushes.
-          if [ "$HEAD_SHA" = "$MAIN_SHA" ]; then
-            git tag "v${VERSION}"
-            git push origin "v${VERSION}"
+          # Create the tag only when it is absent. A dispatched CI run can
+          # finish while another copy of this job is still between the
+          # check and `git tag`; fetch again immediately before tagging.
+          tag_version() {
+            local version="$1" sha="$2" have
+            git fetch origin "refs/tags/v${version}" --force || true
+            if git rev-parse -q --verify "refs/tags/v${version}^{commit}" >/dev/null; then
+              have="$(git rev-parse "refs/tags/v${version}^{commit}")"
+              if [ "$have" = "$sha" ]; then
+                echo "v${version} already tags ${sha}"
+                echo "tagged=true" >> "$GITHUB_OUTPUT"
+                return 0
+              fi
+              echo "v${version} already tags ${have}, not ${sha}" >&2
+              exit 1
+            fi
+            git tag "v${version}" "$sha"
+            git push origin "refs/tags/v${version}"
             echo "tagged=true" >> "$GITHUB_OUTPUT"
-            echo "bump_version: tagged v${VERSION} on ${HEAD_SHA}"
+            echo "bump_version: tagged v${version} on ${sha}"
+          }
+
+          # workflow_dispatch CI for a SHA that a GITHUB_TOKEN push will
+          # not start on its own. Watches the newest run for that SHA.
+          wait_for_dispatched_ci() {
+            local sha="$1" id="" attempt
+            for attempt in $(seq 1 36); do
+              id="$(gh run list \
+                --repo "$GH_REPO" \
+                --workflow ci.yml \
+                --commit "$sha" \
+                --event workflow_dispatch \
+                --limit 10 \
+                --json databaseId,status,conclusion,headSha,createdAt \
+                --jq "[.[] | select(.headSha==\"${sha}\")] | sort_by(.createdAt) | reverse | .[0].databaseId // empty")"
+              if [ -n "$id" ]; then
+                break
+              fi
+              sleep 5
+            done
+            if [ -z "$id" ]; then
+              echo "No ci.yml workflow_dispatch run appeared for ${sha}" >&2
+              exit 1
+            fi
+            echo "Watching CI run ${id} for ${sha}"
+            gh run watch "$id" --repo "$GH_REPO" --exit-status
+          }
+
+          # Version files already on main (release PR just merged, or a
+          # prepare-release PR bumped CMakeLists, including 1.0.0).
+          # Tag that commit — allowed even when main forbids direct pushes.
+          if [ "$HEAD_SHA" = "$MAIN_SHA" ]; then
+            tag_version "$VERSION" "$HEAD_SHA"
             exit 0
           fi
 
-          # New release commit is not on main.  Open a PR; squash merge
-          # later rewrites the SHA, so tagging happens on the next run.
+          # New release commit is not on main. Open a PR, run CI on it,
+          # squash-merge, run CI on the squash SHA, then tag that SHA.
+          # GITHUB_TOKEN pushes do not start those runs by themselves.
           BRANCH="chore/release-v${VERSION}"
           git push --force origin "HEAD:refs/heads/${BRANCH}"
 
@@ -203,10 +263,37 @@ jobs:
           echo "pr_url=${PR_URL}" >> "$GITHUB_OUTPUT"
           echo "opened ${PR_URL}"
 
-          # Best-effort: queue merge once checks pass.  Required reviews
-          # or a disabled auto-merge setting leave the PR for a human.
-          gh pr merge "$PR_URL" --squash --auto --delete-branch || \
-            echo "auto-merge not enabled; merge ${PR_URL} to tag v${VERSION}"
+          # The push of BRANCH used GITHUB_TOKEN, so pull_request and
+          # push events did not start CI. Dispatch it, then merge.
+          echo "Dispatching CI on ${BRANCH} @ ${HEAD_SHA}"
+          gh workflow run ci.yml --repo "$GH_REPO" --ref "$BRANCH"
+          wait_for_dispatched_ci "$HEAD_SHA"
+
+          if ! gh pr merge "$PR_URL" --squash --delete-branch; then
+            echo "Could not squash-merge ${PR_URL}."
+            echo "Merge it by hand and keep the chore(release) title."
+            echo "A human merge starts CI; this workflow tags after that run is green."
+            exit 0
+          fi
+
+          git fetch origin main --tags --force
+          SQUASH="$(git rev-parse origin/main)"
+          tip_subject="$(git log -1 --format=%s origin/main)"
+          case "$tip_subject" in
+            "chore(release): v${VERSION}"*) ;;
+            *)
+              echo "origin/main is ${SQUASH} (${tip_subject}), not the v${VERSION} squash. Not tagging." >&2
+              exit 1
+              ;;
+          esac
+
+          # The squash push also used GITHUB_TOKEN. Dispatch CI on that
+          # exact main SHA, then tag it.
+          echo "Dispatching CI on main @ ${SQUASH}"
+          gh workflow run ci.yml --repo "$GH_REPO" --ref main
+          wait_for_dispatched_ci "$SQUASH"
+          .github/scripts/require_ci_success.sh "$SQUASH"
+          tag_version "$VERSION" "$SQUASH"
 
       - name: Dispatch binary release
         if: steps.cut.outputs.tagged == 'true' && steps.cut.outputs.version != ''

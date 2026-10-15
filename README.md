@@ -444,13 +444,6 @@ Without a sandbox, `/exec` in the TUI runs on your machine as you. The confirmat
 prompt is a speed bump, not a sandbox. See [docs/concepts/sandbox.md](docs/concepts/sandbox.md)
 and [SECURITY.md](SECURITY.md).
 
-## Stability
-
-From 1.0 on, these follow semver: CLI flags, agent file fields, the `~/.arbiter/`
-layout, and documented `ARBITER_*` environment variables. The HTTP server (`--api`),
-tenants, A2A, reconcile, the scheduler, and voice are experimental. They ship and
-work, but they may change in a minor release. See [docs/stability.md](docs/stability.md).
-
 ## License
 
 [Apache 2.0](LICENSE)

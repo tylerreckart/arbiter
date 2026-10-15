@@ -375,11 +375,13 @@ target_sources(arbiter PRIVATE
 target_link_libraries(arbiter PRIVATE OpenTUI::core)
 arbiter_link_onnxruntime(arbiter)
 
-# OpenTUI ships as a shared library that must travel with the arbiter
-# binary.  Stage a copy next to the executable and use a same-directory
-# RPATH (@loader_path / $ORIGIN) so release tarballs and `install.sh`
-# do not bake the CI/build-tree absolute path into the Mach-O/ELF header
-# (that made runner smoke tests pass while installed copies failed).
+# OpenTUI and ONNX Runtime must sit next to the executable. The runtime
+# path is only @loader_path (macOS) or $ORIGIN (Linux): no build-tree
+# directories, and no trailing empty entry (an empty RUNPATH component
+# makes glibc search the current working directory).
+# BUILD_WITH_INSTALL_RPATH keeps the linker's automatic link-directory
+# RPATH out of the binary, including the $ORIGIN-relative embed-fetch
+# and opentui paths BUILD_RPATH_USE_ORIGIN used to bake in.
 get_filename_component(ARBITER_OPENTUI_LIB_BASENAME
     "${ARBITER_OPENTUI_LIBRARY}" NAME)
 add_custom_command(TARGET arbiter POST_BUILD
@@ -389,6 +391,7 @@ add_custom_command(TARGET arbiter POST_BUILD
     COMMENT "Staging ${ARBITER_OPENTUI_LIB_BASENAME} next to arbiter"
     VERBATIM
 )
+arbiter_stage_onnxruntime(arbiter)
 
 if(APPLE)
     target_link_libraries(arbiter PRIVATE
@@ -398,22 +401,43 @@ if(APPLE)
     )
     target_link_options(arbiter PRIVATE "-Wl,-ld_classic")
     set_target_properties(arbiter PROPERTIES
-        BUILD_RPATH "@loader_path"
+        BUILD_WITH_INSTALL_RPATH TRUE
         INSTALL_RPATH "@loader_path"
+        BUILD_RPATH "@loader_path"
+        INSTALL_RPATH_USE_LINK_PATH FALSE
     )
 elseif(UNIX)
     target_link_libraries(arbiter PRIVATE dl pthread)
     set_target_properties(arbiter PROPERTIES
-        BUILD_RPATH "$ORIGIN"
+        BUILD_WITH_INSTALL_RPATH TRUE
         INSTALL_RPATH "$ORIGIN"
-        BUILD_RPATH_USE_ORIGIN TRUE
+        BUILD_RPATH "$ORIGIN"
+        INSTALL_RPATH_USE_LINK_PATH FALSE
     )
 endif()
 
 # --- Install ---
-install(TARGETS arbiter RUNTIME DESTINATION bin)
-# Same-directory layout as the release tarball / curl|sh installer.
-install(FILES "${ARBITER_OPENTUI_LIBRARY}" DESTINATION bin)
+# Payload lives in lib/arbiter. bin/arbiter is a symlink so $ORIGIN and
+# @loader_path (the real binary's directory) find the shared libraries.
+install(TARGETS arbiter RUNTIME DESTINATION lib/arbiter)
+install(FILES "${ARBITER_OPENTUI_LIBRARY}" DESTINATION lib/arbiter)
+if(ARBITER_HAS_ONNXRUNTIME)
+    install(CODE "
+        set(_prefix \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}\")
+        execute_process(COMMAND \"${CMAKE_COMMAND}\"
+            -DSRC=${ARBITER_ONNXRUNTIME_LIBDIR}
+            -DDEST=\${_prefix}/lib/arbiter
+            -P \"${CMAKE_SOURCE_DIR}/cmake/stage_onnxruntime.cmake\"
+            COMMAND_ERROR_IS_FATAL ANY)
+    ")
+endif()
+install(CODE "
+    set(_prefix \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}\")
+    set(_bindir \"\${_prefix}/bin\")
+    file(MAKE_DIRECTORY \"\${_bindir}\")
+    file(REMOVE \"\${_bindir}/arbiter\")
+    file(CREATE_LINK \"../lib/arbiter/arbiter\" \"\${_bindir}/arbiter\" SYMBOLIC)
+")
 install(DIRECTORY agents/ DESTINATION share/arbiter/agents
         FILES_MATCHING PATTERN "*.json")
 install(DIRECTORY themes/ DESTINATION share/arbiter/themes
@@ -481,6 +505,14 @@ arbiter_link_onnxruntime(arbiter-embed-bench)
 option(INDEX_BUILD_TESTS "Build PTY integration tests" ON)
 if(INDEX_BUILD_TESTS)
     enable_testing()
+
+    # Tracks project(arbiter VERSION ...), including a suffix when one is set.
+    add_test(NAME arbiter_version COMMAND arbiter --version)
+    set_tests_properties(arbiter_version PROPERTIES
+        PASS_REGULAR_EXPRESSION "^arbiter ${PROJECT_VERSION}")
+    add_test(NAME arbiter_version_short COMMAND arbiter -V)
+    set_tests_properties(arbiter_version_short PROPERTIES
+        PASS_REGULAR_EXPRESSION "^arbiter ${PROJECT_VERSION}")
 
     add_executable(line_editor_tests
         tests/pty_harness.cpp

@@ -183,7 +183,7 @@ struct ModelOption {
 std::vector<ModelOption> wizard_model_options() {
     // Stable wizard order (not full catalogue order).
     static constexpr const char* kRecommendedIds[] = {
-        "~openai/gpt-latest",
+        "~openai/gpt-sol-latest",
         "anthropic/claude-sonnet-5",
         "openai/gpt-5.5",
         "google/gemini-3.6-flash",

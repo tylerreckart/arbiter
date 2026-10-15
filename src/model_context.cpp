@@ -77,7 +77,9 @@ int context_window_for_model(std::string_view model) {
     }
 
     if (model.find("gpt-5") != std::string_view::npos ||
+        model.find("gpt-6") != std::string_view::npos ||
         model.find("gpt-latest") != std::string_view::npos ||
+        model.find("gpt-sol-latest") != std::string_view::npos ||
         model.find("gpt-mini-latest") != std::string_view::npos)
         return 1'000'000;
 

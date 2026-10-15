@@ -456,9 +456,11 @@ TEST_CASE("Subprocess: strips secret-shaped parent env; keeps env_extra") {
                     {"PLAYWRIGHT_BROWSERS_PATH=/tmp/pw-ok",
                      "OPENROUTER_API_KEY=from-registry-ok"});
     // Drain until EOF (printenv exits immediately).
+    // Full printenv can be slow to start on a loaded CI runner; a short
+    // first-read timeout looks like an empty environment.
     std::string dump;
     for (;;) {
-        auto line = proc.recv_line(500ms);
+        auto line = proc.recv_line(2s);
         if (!line) break;
         dump += *line;
         dump += '\n';

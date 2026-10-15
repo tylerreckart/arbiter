@@ -77,7 +77,7 @@ TEST_CASE("format_model_catalog_list mentions usage") {
 
 TEST_CASE("wizard recommended ids resolve in catalogue") {
     static constexpr const char* kRecommended[] = {
-        "~openai/gpt-latest",
+        "~openai/gpt-sol-latest",
         "anthropic/claude-sonnet-5",
         "openai/gpt-5.5",
         "google/gemini-3.6-flash",

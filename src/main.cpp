@@ -72,6 +72,10 @@ int main(int argc, char* argv[]) {
 
         std::string arg1 = argv[1];
 
+        if (arg1 == "--version" || arg1 == "-V") {
+            std::cout << "arbiter " << INDEX_VERSION << "\n";
+            return 0;
+        }
         if (arg1 == "--no-exec") {
             const std::string theme = arbiter::argv_repl_theme(argc, argv);
             const std::string dir = get_config_dir();
@@ -219,6 +223,7 @@ int main(int argc, char* argv[]) {
                 "                                     omit it to preserve user-edited agent definitions.\n"
                 "  arbiter --setup-tools              Interactive wizard for /search, /browse, and MCP\n"
                 "                                     Writes ~/.arbiter/search_api_key and mcp_servers.json.\n"
+                "  arbiter --version, -V              Print the build version\n"
                 "  arbiter --help                     This help\n\n"
                 "Tenants (for --api):\n"
                 "  arbiter --add-tenant <name>              Provision a tenant + API key\n"

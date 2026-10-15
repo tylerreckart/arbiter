@@ -124,21 +124,25 @@ Leave the version number alone in ordinary PRs. Notes go under
 
 The Actions repo setting **Allow GitHub Actions to create and approve
 pull requests** must be on, or the bot cannot open the release PR.
-If required reviews block auto-merge, merge `chore/release-v*` by
-hand (keep the `chore(release): vX.Y.Z` title).
+If required reviews block the squash merge, merge `chore/release-v*`
+by hand (keep the `chore(release): vX.Y.Z` title).
 
-Minor and major are never automatic.  To ship one:
+Branch protection cannot be set from the workflow file. Mark these CI
+jobs as required status checks so a red PR cannot merge:
+`version-bump-script`, `macos-arm64`, `linux-x86_64`,
+`linux-x86_64-asan`, `linux-x86_64-tsan`.
 
-- **Minor, major, or a specific X.Y.Z** — Actions → Version bump →
-  Run workflow.  Pick `minor` / `major`, or type an explicit version.
-- **Version in the PR itself** — change `project(arbiter VERSION …)`
-  (and optionally cut the changelog heading).  On merge the workflow
-  tags that version instead of auto-patching.  Use this for a
-  prepare-release PR.
+Minor bumps are not automatic. To ship one:
+
+- **Minor or a specific X.Y.Z other than the 1.0 cut** — Actions →
+  Version bump → Run workflow. Pick `minor`, or type an explicit version.
+- **Version in the PR itself** — change `project(arbiter VERSION …)`.
+  On merge the workflow tags that version instead of auto-patching.
+  This is the 1.0 path.
 - **Skip a release** — put `[skip version]` in the squash title or
-  merge commit message.  Tag later by hand or via workflow_dispatch.
+  merge commit message. Tag later by hand or via workflow_dispatch.
 - **Tag only** — `git tag vX.Y.Z && git push origin vX.Y.Z` still
-  runs `release.yml` directly.  Keep CMakeLists in sync with the tag
+  runs `release.yml` directly. Keep CMakeLists in sync with the tag
   or the binary will advertise a stale `INDEX_VERSION`.
 
 ## What's in scope
