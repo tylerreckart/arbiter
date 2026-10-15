@@ -1,9 +1,23 @@
 #pragma once
 // arbiter/include/intent_route.h — Latency-first ingress routing.
 //
-// Live mode (ARBITER_INTENT_LIVE=luna, default off) replaces the full-LLM
-// intent fallback. The request path returns as soon as a local decision
-// exists. Luna, when enabled, runs after that return.
+// ARBITER_ROUTER selects the depth-0 router. Default is bge.
+//
+//   bge        Local embedding router. No background Luna. A missing
+//              model, a skipped download, or a failed embed call uses
+//              the heuristic phrase matcher. It does not route to the
+//              default agent and it does not start Luna.
+//   luna       Same embedding path. Luna runs in the background only
+//              after the embedder scored a choice below
+//              embed_min_confidence. A missing model uses the heuristic
+//              and does not start Luna.
+//   heuristic  Constitution intent.mode (heuristic / hybrid / llm).
+//              No model download.
+//
+// ARBITER_INTENT_LIVE is deprecated. luna / on / true / 1 map to luna.
+// Any other value maps to heuristic. ARBITER_ROUTER wins when both are
+// set. The request path returns as soon as a local decision exists.
+// Luna, when that mode is selected, runs after that return.
 //
 //   1. A fresh cached Luna decision for the normalized request is the
 //      route. That is how the next similar request benefits from a
@@ -11,13 +25,12 @@
 //   2. Otherwise the local embedding router decides. Its choice is the
 //      route at every confidence. High confidence (embed_min_confidence)
 //      leaves Luna idle. Low confidence still returns the embedding
-//      choice and starts Luna in the background.
+//      choice. Luna starts only in luna mode.
 //   3. When the embedding model is missing or the call fails, the route
-//      is the default agent. Luna still starts in the background so a
-//      later similar request can hit the cache.
+//      is the heuristic classifier. Luna does not start.
 //
-// The heuristic is not on this path. This path never calls the generative
-// <intent> classifier.
+// This path never calls the generative <intent> classifier. The
+// heuristic classifier is the fallback when the embedder cannot score.
 //
 // Background Luna uses joint (agent, difficulty) labels. A successful
 // result is stored in the decision cache and written beside the embedding
@@ -36,7 +49,8 @@
 // The router reads them from IntentRouteConfig; it does not embed cutoffs.
 //
 // Defaults (override with the matching ARBITER_INTENT_* variable):
-//   live                  false          ARBITER_INTENT_LIVE
+//   live                  false          ARBITER_ROUTER=luna
+//                                        (legacy ARBITER_INTENT_LIVE)
 //   luna_min_confidence   0.55           ARBITER_INTENT_LUNA_MIN_CONFIDENCE
 //   strong_difficulty     0.5            ARBITER_INTENT_STRONG_DIFFICULTY
 //   default_difficulty    0.5            ARBITER_INTENT_DEFAULT_DIFFICULTY
@@ -53,8 +67,8 @@
 //   embed_min_confidence  0.35           ARBITER_INTENT_EMBED_MIN_CONFIDENCE
 //   embed_temperature     0.02           ARBITER_INTENT_EMBED_TEMPERATURE
 //
-// Shadow mode (ARBITER_INTENT_SHADOW=luna or embed) is skipped while live
-// mode already ran, so the same backend is not called twice.
+// Shadow mode (ARBITER_INTENT_SHADOW=luna or embed) is skipped while the
+// embedding router already ran, so the same backend is not called twice.
 
 #include "decision.h"
 #include "intent.h"
@@ -73,6 +87,18 @@
 #include <vector>
 
 namespace arbiter {
+
+// bge is the default. luna adds background refinement. heuristic skips
+// the download and keeps the constitution classifier.
+enum class RouterMode {
+    Bge,
+    Luna,
+    Heuristic,
+};
+
+// ARBITER_ROUTER=bge|embed|embedding|luna|heuristic|phrase|off.
+// Unset reads the deprecated ARBITER_INTENT_LIVE (see the file comment).
+RouterMode router_mode_from_env();
 
 struct IntentRouteConfig {
     bool live = false;
@@ -115,7 +141,7 @@ IntentRouteConfig intent_route_defaults();
 // cache_ttl_ms clamps to ≥ 0.
 IntentRouteConfig intent_route_config_from_env();
 
-// ARBITER_INTENT_LIVE is luna / on / true / 1.
+// True only for RouterMode::Luna. Default bge leaves this false.
 bool intent_live_luna_enabled();
 
 // One ingress decision, for later calibration. Luna fields stay empty
@@ -181,11 +207,11 @@ using LunaDecideFn = std::function<DecisionResult(
 
 // Runs on the caller while the background Luna call is in flight.
 // Speculative agent is the synchronous route (embedding choice, else
-// the default agent).
+// the heuristic target).
 using ContextLoadFn = std::function<void(const std::string& speculative_agent)>;
 
-// Local embedding decide(). Empty, or a failed result, routes to the
-// default agent and may start background Luna.
+// Local embedding decide(). Empty, or a failed result, uses the
+// heuristic classifier and does not start Luna.
 using EmbedDecideFn = std::function<DecisionResult(const DecisionRequest&)>;
 
 // LRU of successful Luna decisions. Keyed by normalized text + roster ids.

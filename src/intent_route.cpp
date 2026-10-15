@@ -3,8 +3,9 @@
 // Cutoffs come from IntentRouteConfig (see intent_route_defaults). This
 // file does not introduce a second confidence or timeout constant.
 // The request path returns the cached Luna decision, otherwise the
-// embedding choice, otherwise the default agent. Luna runs on a worker
-// the caller does not join.
+// embedding choice, otherwise the heuristic classifier. Luna runs on a
+// worker the caller does not join, and only after a scored low-confidence
+// embed when the caller passed a Luna callback.
 
 #include "intent_route.h"
 #include "embed_route.h"
@@ -377,22 +378,6 @@ IntentRouteOutcome finish(IntentRouteOutcome out,
     return out;
 }
 
-Intent fallback_intent(const Intent& hint, const IntentRouteConfig& cfg,
-                       const std::string& error) {
-    Intent out = hint;
-    out.source = "fallback";
-    out.confidence = 0;
-    out.llm_used = false;
-    out.malformed = false;
-    const std::string def = cfg.default_agent.empty() ? "index" : cfg.default_agent;
-    if (def == "index") out.target_agent.clear();
-    else out.target_agent = def;
-    if (out.target_agent.empty()) out.brief.clear();
-    else if (out.brief.empty()) out.brief = "Route to " + out.target_agent;
-    (void)error;
-    return out;
-}
-
 void fill_from_marginal(Intent& intent, const Intent& hint, const Marginal& m,
                         const IntentRouteConfig& cfg, IntentRouteTimings& timings) {
     intent = hint;
@@ -483,10 +468,50 @@ IntentRouteConfig intent_route_config_from_env() {
     return cfg;
 }
 
+void warn_router_once(std::atomic<bool>& once, const char* msg) {
+    if (once.exchange(true, std::memory_order_relaxed)) return;
+    std::fprintf(stderr, "%s\n", msg);
+}
+
+RouterMode parse_router_value(const std::string& raw) {
+    std::string s = trim_copy(raw);
+    for (char& c : s)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (s == "bge" || s == "embed" || s == "embedding") return RouterMode::Bge;
+    if (s == "luna") return RouterMode::Luna;
+    if (s == "heuristic" || s == "phrase" || s == "off") return RouterMode::Heuristic;
+    return RouterMode::Bge;
+}
+
+RouterMode router_mode_from_env() {
+    const char* router = std::getenv("ARBITER_ROUTER");
+    const char* legacy = std::getenv("ARBITER_INTENT_LIVE");
+    const bool have_router = router && *router;
+    const bool have_legacy = legacy && *legacy;
+    if (have_router) {
+        if (have_legacy) {
+            static std::atomic<bool> once{false};
+            warn_router_once(once,
+                "ARBITER_INTENT_LIVE is deprecated and ignored because ARBITER_ROUTER is set. "
+                "Use ARBITER_ROUTER=bge, luna, or heuristic.");
+        }
+        return parse_router_value(router);
+    }
+    if (have_legacy) {
+        const RouterMode mode = flag_on(lower_copy(trim_copy(legacy).c_str()))
+                                    ? RouterMode::Luna
+                                    : RouterMode::Heuristic;
+        static std::atomic<bool> once{false};
+        warn_router_once(once, mode == RouterMode::Luna
+            ? "ARBITER_INTENT_LIVE is deprecated. Set ARBITER_ROUTER=luna instead."
+            : "ARBITER_INTENT_LIVE is deprecated. Set ARBITER_ROUTER=heuristic instead.");
+        return mode;
+    }
+    return RouterMode::Bge;
+}
+
 bool intent_live_luna_enabled() {
-    const char* v = std::getenv("ARBITER_INTENT_LIVE");
-    if (!v || !*v) return false;
-    return flag_on(lower_copy(v));
+    return router_mode_from_env() == RouterMode::Luna;
 }
 
 IntentRouteCache::IntentRouteCache() = default;
@@ -867,14 +892,17 @@ IntentRouteOutcome route_intent_live(const IntentInput& in,
         out.timings.tier = "embed";
         out.timings.choose_model = false;
     } else {
-        out.intent = fallback_intent(hint, route_cfg, "embedding unavailable");
-        out.timings.tier = "fallback";
+        out.intent = hint;
+        out.timings.tier = "heuristic";
         out.timings.error = "embedding unavailable";
         out.timings.choose_model = false;
     }
 
     const std::string sync_agent = agent_or_index(out.intent.target_agent);
-    const bool want_luna = static_cast<bool>(luna) && !embed_confident;
+    // Luna refines a scored low-confidence embed. A missing model stays
+    // on the heuristic and does not start a background call.
+    const bool want_luna =
+        static_cast<bool>(luna) && embed_scored && !embed_confident;
     std::vector<DecisionOption> options;
     if (want_luna)
         options = build_route_options(in.roster, route_cfg.option_desc_chars);

@@ -289,9 +289,11 @@ void Orchestrator::load_agents(const std::string& dir) {
             }
         }
     }
-    // Centroids are a startup cost only when live or shadow routing will
-    // actually embed. A missing model is ignored; ingress falls back.
-    if (!intent_live_luna_enabled() && !intent_shadow_embed_enabled()) return;
+    // Centroids are a startup cost when the embedding router or shadow
+    // embed will run. The default router is bge. A missing model is
+    // ignored here; ingress uses the heuristic classifier.
+    if (router_mode_from_env() == RouterMode::Heuristic &&
+        !intent_shadow_embed_enabled()) return;
     std::vector<IntentRosterEntry> roster;
     {
         std::lock_guard<std::mutex> lock(agents_mutex_);
@@ -1050,87 +1052,112 @@ Orchestrator::apply_intent_ingress(const std::string& agent_id,
     }
 
     bool live_ran = false;
-    if (intent_live_luna_enabled()) {
-        live_ran = true;
+    const RouterMode router_mode = router_mode_from_env();
+    if (router_mode != RouterMode::Heuristic) {
         const IntentRouteConfig route_cfg = intent_route_config_from_env();
-        const std::string luna_model = route_cfg.luna_model.empty()
-                                           ? std::string(kLunaModelId)
-                                           : route_cfg.luna_model;
-        // Reuses ApiClient's pooled keep-alive connection. The watcher
-        // cancels only this call's token; it does not hard-cancel the client.
-        LunaDecideFn luna = [this, luna_model](const DecisionRequest& request,
-                                               const std::atomic<bool>& cancel) {
-            auto token = std::make_shared<CancelToken>();
-            RequestCancelScope scope(client_, token);
-            std::atomic<bool> stop{false};
-            std::thread watcher([&] {
-                while (!stop.load(std::memory_order_acquire)) {
-                    if (cancel.load(std::memory_order_acquire)) {
-                        token->request_cancel();
-                        return;
-                    }
-                    std::this_thread::sleep_for(std::chrono::milliseconds(kLunaCancelPollMs));
-                }
-            });
-            struct WatchJoin {
-                std::atomic<bool>& stop;
-                std::thread& watcher;
-                ~WatchJoin() {
-                    stop.store(true, std::memory_order_release);
-                    if (watcher.joinable()) watcher.join();
-                }
-            } join{stop, watcher};
-            LunaLogprobBackend backend(client_, luna_model);
-            return backend.decide(request);
-        };
-        ContextLoadFn load = [this, &in](const std::string& speculative) {
-            IngressPrefetch pre;
-            pre.agent_id = speculative;
-            if (lesson_invoker_cb_) {
-                try {
-                    pre.lesson = lesson_invoker_cb_("preamble", in.text, speculative);
-                    pre.have_lesson = true;
-                } catch (...) {}
-            }
-            if (todo_invoker_cb_) {
-                try {
-                    pre.todo = todo_invoker_cb_("list", "", speculative);
-                    pre.have_todo = true;
-                } catch (...) {}
-            }
-            tl_ingress_prefetch = std::move(pre);
-        };
         EmbedDecideFn embed;
+        bool embed_ready = false;
         try {
             auto& router = EmbeddingRouter::instance();
             if (router.ready() || router.prepare()) {
+                embed_ready = true;
                 const double temperature = route_cfg.embed_temperature;
                 embed = [temperature](const DecisionRequest& request) {
                     return EmbeddingRouter::instance().decide(request, temperature);
                 };
             }
         } catch (...) {}
-        try {
-            IntentRouteOutcome outcome = route_intent_live(
-                in, icfg, route_cfg, intent_route_cache_, luna, load, embed);
-            intent_route_bind_turn(&intent_route_cache_, outcome.request_hash);
-            result.intent = std::move(outcome.intent);
-            result.applied = intent_route_should_apply(
-                                 icfg, result.intent, in.requested_agent, fresh_ingress) &&
+
+        if (!embed_ready) {
+            // Missing weights, a skipped download, or a failed session.
+            // The phrase matcher decides. Luna does not start.
+            IntentConfig heuristic_cfg = icfg;
+            heuristic_cfg.mode = "heuristic";
+            try {
+                result.intent = resolve_intent(in, heuristic_cfg, {});
+            } catch (...) {
+                return result;
+            }
+            result.applied = intent_should_apply(
+                                 heuristic_cfg, result.intent, in.requested_agent,
+                                 fresh_ingress) &&
                              has_agent(result.intent.target_agent);
             if (result.applied)
                 result.agent_id = result.intent.target_agent;
-            if (outcome.timings.choose_model) {
-                const Constitution* exec = cfg_src;
-                try {
-                    exec = &get_constitution(result.agent_id);
-                } catch (...) {}
-                result.executor_model = select_executor_model(
-                    exec->model, exec->advisor.model, outcome.timings.difficulty,
-                    outcome.timings.difficulty_known, route_cfg);
+        } else {
+            live_ran = true;
+            LunaDecideFn luna;
+            if (router_mode == RouterMode::Luna) {
+                const std::string luna_model = route_cfg.luna_model.empty()
+                                                   ? std::string(kLunaModelId)
+                                                   : route_cfg.luna_model;
+                // Reuses ApiClient's pooled keep-alive connection. The watcher
+                // cancels only this call's token; it does not hard-cancel the client.
+                luna = [this, luna_model](const DecisionRequest& request,
+                                          const std::atomic<bool>& cancel) {
+                    auto token = std::make_shared<CancelToken>();
+                    RequestCancelScope scope(client_, token);
+                    std::atomic<bool> stop{false};
+                    std::thread watcher([&] {
+                        while (!stop.load(std::memory_order_acquire)) {
+                            if (cancel.load(std::memory_order_acquire)) {
+                                token->request_cancel();
+                                return;
+                            }
+                            std::this_thread::sleep_for(std::chrono::milliseconds(kLunaCancelPollMs));
+                        }
+                    });
+                    struct WatchJoin {
+                        std::atomic<bool>& stop;
+                        std::thread& watcher;
+                        ~WatchJoin() {
+                            stop.store(true, std::memory_order_release);
+                            if (watcher.joinable()) watcher.join();
+                        }
+                    } join{stop, watcher};
+                    LunaLogprobBackend backend(client_, luna_model);
+                    return backend.decide(request);
+                };
             }
-        } catch (...) {
-            return result;  // never break dispatch
+            ContextLoadFn load = [this, &in](const std::string& speculative) {
+                IngressPrefetch pre;
+                pre.agent_id = speculative;
+                if (lesson_invoker_cb_) {
+                    try {
+                        pre.lesson = lesson_invoker_cb_("preamble", in.text, speculative);
+                        pre.have_lesson = true;
+                    } catch (...) {}
+                }
+                if (todo_invoker_cb_) {
+                    try {
+                        pre.todo = todo_invoker_cb_("list", "", speculative);
+                        pre.have_todo = true;
+                    } catch (...) {}
+                }
+                tl_ingress_prefetch = std::move(pre);
+            };
+            try {
+                IntentRouteOutcome outcome = route_intent_live(
+                    in, icfg, route_cfg, intent_route_cache_, luna, load, embed);
+                intent_route_bind_turn(&intent_route_cache_, outcome.request_hash);
+                result.intent = std::move(outcome.intent);
+                result.applied = intent_route_should_apply(
+                                     icfg, result.intent, in.requested_agent, fresh_ingress) &&
+                                 has_agent(result.intent.target_agent);
+                if (result.applied)
+                    result.agent_id = result.intent.target_agent;
+                if (outcome.timings.choose_model) {
+                    const Constitution* exec = cfg_src;
+                    try {
+                        exec = &get_constitution(result.agent_id);
+                    } catch (...) {}
+                    result.executor_model = select_executor_model(
+                        exec->model, exec->advisor.model, outcome.timings.difficulty,
+                        outcome.timings.difficulty_known, route_cfg);
+                }
+            } catch (...) {
+                return result;  // never break dispatch
+            }
         }
     } else {
         IntentLlmFn llm;
