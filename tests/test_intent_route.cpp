@@ -114,6 +114,10 @@ DecisionResult embed_of(const std::string& choice, double confidence, bool ok = 
     return r;
 }
 
+EmbedDecideFn low_embed() {
+    return [](const DecisionRequest&) { return embed_of("vera", 0.1); };
+}
+
 DecisionResult vera_win() {
     DecisionResult r;
     r.ok = true;
@@ -130,42 +134,37 @@ DecisionResult vera_win() {
 
 } // namespace
 
-TEST_CASE("embedding absence returns the default agent without waiting for luna") {
+TEST_CASE("embedding absence uses the heuristic and does not start luna") {
     IntentRouteCache cache;
     int calls = 0;
     auto cfg = route_cfg();
     cfg.timeout_ms = 5000;
+    auto luna = [&](const DecisionRequest&, const std::atomic<bool>&) {
+        ++calls;
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        return joint_result(0.05, 0.90, 0.03, 0.02);
+    };
     auto out = route_intent_live(
         input("Look up primary sources for the 2024 RISC-V memory model"),
-        hybrid(), cfg, cache,
-        [&](const DecisionRequest&, const std::atomic<bool>&) {
-            ++calls;
-            std::this_thread::sleep_for(std::chrono::milliseconds(300));
-            return joint_result(0.05, 0.90, 0.03, 0.02);
-        });
-    CHECK(out.timings.tier == "fallback");
-    CHECK(out.intent.source == "fallback");
-    CHECK(out.intent.target_agent.empty());
-    CHECK(out.used_luna);
-    CHECK(out.luna_finished);
-    CHECK_FALSE(out.luna_finished->load(std::memory_order_acquire));
+        hybrid(), cfg, cache, luna);
+    CHECK(out.timings.tier == "heuristic");
+    CHECK(out.intent.source == "heuristic");
+    CHECK(out.intent.target_agent == "scout");
+    CHECK(out.intent.confidence == doctest::Approx(0.9));
+    CHECK(out.timings.error == "embedding unavailable");
+    CHECK_FALSE(out.used_luna);
+    CHECK_FALSE(out.luna_finished);
     CHECK(out.timings.total_ms < 200);
-    CHECK_FALSE(intent_route_should_apply(hybrid(), out.intent, "index"));
-    wait_luna(out);
-    CHECK(out.luna_finished->load(std::memory_order_acquire));
-    CHECK(calls == 1);
-    auto next = route_intent_live(
-        input("Look up primary sources for the 2024 RISC-V memory model"),
-        hybrid(), cfg, cache,
-        [&](const DecisionRequest&, const std::atomic<bool>&) {
-            ++calls;
-            return joint_result(0.05, 0.90, 0.03, 0.02);
-        });
-    CHECK(next.timings.tier == "cache");
-    CHECK(next.timings.cache_hit);
-    CHECK(next.intent.target_agent == "scout");
-    CHECK(next.intent.source == "luna");
-    CHECK(calls == 1);
+    CHECK(intent_route_should_apply(hybrid(), out.intent, "index"));
+    CHECK(calls == 0);
+
+    auto plain = route_intent_live(input("hello there"), hybrid(), cfg, cache, luna);
+    CHECK(plain.timings.tier == "heuristic");
+    CHECK(plain.intent.source == "heuristic");
+    CHECK(plain.intent.target_agent.empty());
+    CHECK_FALSE(plain.used_luna);
+    CHECK_FALSE(intent_route_should_apply(hybrid(), plain.intent, "index"));
+    CHECK(calls == 0);
 }
 
 TEST_CASE("background luna carries agent and difficulty into the next route") {
@@ -179,9 +178,11 @@ TEST_CASE("background luna carries agent and difficulty into the next route") {
             ++calls;
             seen = req;
             return joint_result(0.05, 0.90, 0.03, 0.02);
-        });
-    CHECK(first.timings.tier == "fallback");
-    CHECK(first.intent.target_agent.empty());
+        },
+        {}, low_embed());
+    CHECK(first.timings.tier == "embed");
+    CHECK(first.intent.source == "embed");
+    CHECK(first.intent.target_agent == "vera");
     CHECK(first.used_luna);
     CHECK_FALSE(first.timings.choose_model);
     wait_luna(first);
@@ -215,8 +216,10 @@ TEST_CASE("a low-confidence luna result is the next route") {
         input("hello there"), hybrid(), cfg, cache,
         [&](const DecisionRequest&, const std::atomic<bool>&) {
             return joint_result(0.40, 0.20, 0.30, 0.10);
-        });
-    CHECK(first.timings.tier == "fallback");
+        },
+        {}, low_embed());
+    CHECK(first.timings.tier == "embed");
+    CHECK(first.intent.target_agent == "vera");
     wait_luna(first);
     auto out = route_intent_live(
         input("hello there"), hybrid(), cfg, cache,
@@ -253,7 +256,8 @@ TEST_CASE("one observed logprob stays below the luna cutoff on the next route") 
             opts[3].id = "vera|strong";
             opts[3].label = "D";
             return classify_logprobs(opts, {tok});
-        });
+        },
+        {}, low_embed());
     wait_luna(first);
     auto out = route_intent_live(
         input("hello there"), hybrid(), cfg, cache,
@@ -279,21 +283,23 @@ TEST_CASE("luna error falls back and is not cached") {
         return r;
     };
     auto cfg = route_cfg();
-    auto first = route_intent_live(input("hello there"), hybrid(), cfg, cache, fail);
-    CHECK(first.timings.tier == "fallback");
-    CHECK(first.intent.source == "fallback");
-    CHECK(first.intent.target_agent.empty());
-    CHECK(first.timings.error == "embedding unavailable");
-    CHECK_FALSE(intent_route_should_apply(hybrid(), first.intent, "index"));
+    auto first = route_intent_live(
+        input("hello there"), hybrid(), cfg, cache, fail, {}, low_embed());
+    CHECK(first.timings.tier == "embed");
+    CHECK(first.intent.source == "embed");
+    CHECK(first.intent.target_agent == "vera");
+    CHECK(first.used_luna);
+    CHECK(intent_route_should_apply(hybrid(), first.intent, "index"));
     wait_luna(first);
     auto logged = cache.find_decision(first.request_hash);
     REQUIRE(logged.has_value());
     CHECK(logged->luna_choice.empty());
     CHECK_FALSE(logged->luna_prob_known);
-    auto second = route_intent_live(input("hello there"), hybrid(), cfg, cache, fail);
+    auto second = route_intent_live(
+        input("hello there"), hybrid(), cfg, cache, fail, {}, low_embed());
     wait_luna(second);
     CHECK(calls == 2);
-    CHECK(second.timings.tier == "fallback");
+    CHECK(second.timings.tier == "embed");
     CHECK_FALSE(second.timings.cache_hit);
 }
 
@@ -313,10 +319,11 @@ TEST_CASE("timeout cancels luna and the caller has already returned") {
             r.ok = false;
             r.error = "cancelled";
             return r;
-        });
-    CHECK(out.timings.tier == "fallback");
+        },
+        {}, low_embed());
+    CHECK(out.timings.tier == "embed");
     CHECK(out.used_luna);
-    CHECK(out.intent.target_agent.empty());
+    CHECK(out.intent.target_agent == "vera");
     CHECK(out.luna_finished);
     CHECK_FALSE(out.luna_finished->load(std::memory_order_acquire));
     CHECK(out.timings.total_ms < 200);
@@ -340,11 +347,12 @@ TEST_CASE("cache hit skips luna and ignores whitespace") {
         return joint_result(0.05, 0.90, 0.03, 0.02);
     };
     auto cfg = route_cfg();
-    auto first = route_intent_live(input("hello there"), hybrid(), cfg, cache, luna);
+    auto first = route_intent_live(
+        input("hello there"), hybrid(), cfg, cache, luna, {}, low_embed());
     wait_luna(first);
     auto second = route_intent_live(input("Hello   There"), hybrid(), cfg, cache, luna);
     CHECK(calls == 1);
-    CHECK(first.timings.tier == "fallback");
+    CHECK(first.timings.tier == "embed");
     CHECK_FALSE(first.timings.cache_hit);
     CHECK(second.timings.tier == "cache");
     CHECK(second.timings.cache_hit);
@@ -377,11 +385,12 @@ TEST_CASE("context load overlaps the luna call") {
                 std::this_thread::sleep_for(std::chrono::milliseconds(2));
             }
             if (inflight.load(std::memory_order_acquire) > 0) overlapped.store(true);
-        });
+        },
+        low_embed());
     CHECK(overlapped.load());
-    CHECK(speculative == "index");
-    CHECK(out.timings.tier == "fallback");
-    CHECK(out.intent.target_agent.empty());
+    CHECK(speculative == "vera");
+    CHECK(out.timings.tier == "embed");
+    CHECK(out.intent.target_agent == "vera");
     wait_luna(out);
 }
 
@@ -398,10 +407,10 @@ TEST_CASE("two threads can share one cache") {
     IntentRouteOutcome a;
     IntentRouteOutcome b;
     std::thread t1([&] {
-        a = route_intent_live(input("hello there"), hybrid(), cfg, cache, luna);
+        a = route_intent_live(input("hello there"), hybrid(), cfg, cache, luna, {}, low_embed());
     });
     std::thread t2([&] {
-        b = route_intent_live(input("hello there"), hybrid(), cfg, cache, luna);
+        b = route_intent_live(input("hello there"), hybrid(), cfg, cache, luna, {}, low_embed());
     });
     t1.join();
     t2.join();
@@ -534,7 +543,7 @@ TEST_CASE("low embedding confidence keeps the embed choice and updates the cache
     CHECK(luna_calls == 1);
 }
 
-TEST_CASE("an embedding failure routes to the default agent and still starts luna") {
+TEST_CASE("an embedding failure uses the heuristic and does not start luna") {
     IntentRouteCache cache;
     int luna_calls = 0;
     auto cfg = route_cfg();
@@ -547,22 +556,26 @@ TEST_CASE("an embedding failure routes to the default agent and still starts lun
         },
         {},
         [&](const DecisionRequest&) { return embed_of("", 0, false); });
-    CHECK(out.timings.tier == "fallback");
-    CHECK(out.intent.target_agent.empty());
-    CHECK(out.intent.source == "fallback");
-    CHECK(out.used_luna);
-    wait_luna(out);
-    CHECK(luna_calls == 1);
+    CHECK(out.timings.tier == "heuristic");
+    CHECK(out.intent.target_agent == "scout");
+    CHECK(out.intent.source == "heuristic");
+    CHECK(out.timings.error == "embedding unavailable");
+    CHECK_FALSE(out.used_luna);
+    CHECK(luna_calls == 0);
+    CHECK(intent_route_should_apply(hybrid(), out.intent, "index"));
     auto next = route_intent_live(
         input("Look up primary sources for the 2024 RISC-V memory model"),
         hybrid(), cfg, cache,
         [&](const DecisionRequest&, const std::atomic<bool>&) {
             ++luna_calls;
             return DecisionResult{};
-        });
-    CHECK(next.timings.cache_hit);
+        },
+        {},
+        [&](const DecisionRequest&) { return embed_of("", 0, false); });
+    CHECK_FALSE(next.timings.cache_hit);
+    CHECK(next.timings.tier == "heuristic");
     CHECK(next.intent.target_agent == "scout");
-    CHECK(luna_calls == 1);
+    CHECK(luna_calls == 0);
 }
 
 TEST_CASE("a cached luna decision is the route for the next similar request") {
@@ -572,7 +585,8 @@ TEST_CASE("a cached luna decision is the route for the next similar request") {
         input("hello there"), hybrid(), cfg, cache,
         [&](const DecisionRequest&, const std::atomic<bool>&) {
             return joint_result(0.05, 0.90, 0.03, 0.02);
-        });
+        },
+        {}, low_embed());
     wait_luna(first);
     int luna_calls = 0;
     auto out = route_intent_live(
@@ -699,11 +713,13 @@ TEST_CASE("luna reroute ignores a low-confidence disagreement and an agreement")
 }
 
 TEST_CASE("env parser keeps documented defaults and rejects junk") {
+    unsetenv("ARBITER_ROUTER");
     unsetenv("ARBITER_INTENT_LIVE");
     unsetenv("ARBITER_INTENT_LUNA_MIN_CONFIDENCE");
     unsetenv("ARBITER_INTENT_LUNA_TIMEOUT_MS");
     unsetenv("ARBITER_INTENT_LUNA_REROUTE");
     CHECK_FALSE(intent_live_luna_enabled());
+    CHECK(router_mode_from_env() == RouterMode::Bge);
     auto base = intent_route_config_from_env();
     CHECK_FALSE(base.live);
     CHECK(base.luna_min_confidence == doctest::Approx(0.55));
@@ -739,5 +755,40 @@ TEST_CASE("env parser keeps documented defaults and rejects junk") {
         CHECK(cfg.embed_min_confidence == doctest::Approx(0.4));
     }
     CHECK_FALSE(intent_live_luna_enabled());
+    CHECK(router_mode_from_env() == RouterMode::Bge);
     CHECK_FALSE(intent_route_config_from_env().luna_reroute);
+    {
+        EnvGuard router("ARBITER_ROUTER", "luna");
+        CHECK(router_mode_from_env() == RouterMode::Luna);
+        CHECK(intent_live_luna_enabled());
+        CHECK(intent_route_config_from_env().live);
+    }
+    {
+        EnvGuard router("ARBITER_ROUTER", "heuristic");
+        CHECK(router_mode_from_env() == RouterMode::Heuristic);
+        CHECK_FALSE(intent_live_luna_enabled());
+        CHECK_FALSE(intent_route_config_from_env().live);
+    }
+    {
+        EnvGuard router("ARBITER_ROUTER", "bge");
+        CHECK(router_mode_from_env() == RouterMode::Bge);
+        CHECK_FALSE(intent_live_luna_enabled());
+    }
+    {
+        EnvGuard router("ARBITER_ROUTER", "off");
+        CHECK(router_mode_from_env() == RouterMode::Heuristic);
+    }
+    {
+        EnvGuard legacy("ARBITER_INTENT_LIVE", "0");
+        CHECK(router_mode_from_env() == RouterMode::Heuristic);
+        CHECK_FALSE(intent_live_luna_enabled());
+    }
+    {
+        EnvGuard router("ARBITER_ROUTER", "bge");
+        EnvGuard legacy("ARBITER_INTENT_LIVE", "luna");
+        CHECK(router_mode_from_env() == RouterMode::Bge);
+        CHECK_FALSE(intent_live_luna_enabled());
+    }
+    CHECK(router_mode_from_env() == RouterMode::Bge);
+    CHECK_FALSE(intent_live_luna_enabled());
 }

@@ -8,8 +8,8 @@
 // when the roster text changes.
 //
 // When the runtime or the weight file is absent, EmbeddingRouter::prepare
-// fails and the live router keeps the heuristic. That is the only path
-// where the heuristic still decides.
+// fails and ingress uses the heuristic classifier. ARBITER_EMBED_NO_FETCH
+// and ARBITER_OFFLINE skip the download.
 
 #include "decision.h"
 
