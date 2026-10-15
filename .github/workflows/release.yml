@@ -5,8 +5,11 @@ name: Build and publish release
 # a `vX.Y.Z` tag (or workflow_dispatch with that tag) is what fires this.
 #
 # Tags usually come from version.yml after a `chore/release-vX.Y.Z`
-# PR merges (main forbids direct pushes).  Minor / major:
-#   - Actions → Version bump → minor / major / explicit X.Y.Z
+# PR merges (main forbids direct pushes).  1.0.0 is a normal pull
+# request that sets `project(arbiter VERSION 1.0.0)`; version.yml tags
+# that commit after CI is green.  Do not use Actions → Version bump →
+# major for that cut.  Other version cuts:
+#   - Actions → Version bump → minor / explicit X.Y.Z
 #   - Bump `project(arbiter VERSION X.Y.Z ...)` in a PR; on merge,
 #     version.yml tags that version instead of auto-patching
 #   - `git tag vX.Y.Z && git push origin vX.Y.Z` (this `on: push: tags`)
