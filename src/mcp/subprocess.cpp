@@ -122,8 +122,19 @@ Subprocess::Subprocess(const std::vector<std::string>& argv,
     // could later land on the redirected stdout pipe (see purge_stdio_buffers).
     std::fflush(nullptr);
 
+    // Block SIGTERM across fork.  terminate() can signal the child before
+    // it reaches userspace, and a pending SIGTERM delivered on the first
+    // child instruction still runs the inherited handler (doctest reports
+    // a crashed test on the shared stdout).  The child installs SIG_DFL
+    // before unblocking, so the pending signal then kills only the child.
+    sigset_t block_term, prev_mask;
+    sigemptyset(&block_term);
+    sigaddset(&block_term, SIGTERM);
+    ::pthread_sigmask(SIG_BLOCK, &block_term, &prev_mask);
+
     pid_t pid = ::fork();
     if (pid < 0) {
+        ::pthread_sigmask(SIG_SETMASK, &prev_mask, nullptr);
         ::close(in_pipe[0]);  ::close(in_pipe[1]);
         ::close(out_pipe[0]); ::close(out_pipe[1]);
         throw std::runtime_error(std::string("fork failed: ") + ::strerror(errno));
@@ -131,6 +142,13 @@ Subprocess::Subprocess(const std::vector<std::string>& argv,
 
     if (pid == 0) {
         // ── Child ─────────────────────────────────────────────────────
+        struct sigaction sa {};
+        sa.sa_handler = SIG_DFL;
+        for (int sig : {SIGHUP, SIGINT, SIGQUIT, SIGPIPE, SIGALRM,
+                        SIGTERM, SIGABRT})
+            ::sigaction(sig, &sa, nullptr);
+        ::pthread_sigmask(SIG_SETMASK, &prev_mask, nullptr);
+
         // Wire up stdio.  Close the parent ends after dup2 so a leftover
         // fd doesn't keep the pipe alive after the child exits.
         must_dup2(in_pipe[0],  STDIN_FILENO);
@@ -193,6 +211,8 @@ Subprocess::Subprocess(const std::vector<std::string>& argv,
     }
 
     // ── Parent ─────────────────────────────────────────────────────
+    ::pthread_sigmask(SIG_SETMASK, &prev_mask, nullptr);
+
     // Close child ends; keep our halves of the pipe.  CLOEXEC so a
     // sibling fork/exec (e.g. /exec-disabled-but-an-internal-popen)
     // doesn't inherit the MCP channel.

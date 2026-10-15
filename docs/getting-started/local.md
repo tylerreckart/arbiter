@@ -27,9 +27,11 @@ Releases cut from this tree also upload that script as `install.sh`
 (`https://github.com/tylerreckart/arbiter/releases/download/<tag>/install.sh`).
 Releases published before the upload still install through the raw URL above.
 Review the [installer source](https://github.com/tylerreckart/arbiter/blob/main/install.sh)
-before running it if you prefer. Set `INSTALL_DIR` to install somewhere other
-than `/usr/local/bin`; the script uses `sudo` only when the target directory is
-not writable.
+before running it if you prefer. Set `INSTALL_DIR` to put the `arbiter` command
+somewhere other than `/usr/local/bin`. The binary and its libraries
+(`libopentui`, `libonnxruntime`) install into a sibling `lib/arbiter` directory;
+`INSTALL_DIR/arbiter` is a symlink to that binary. The script uses `sudo` only
+when the target directory is not writable.
 
 Pin a specific binary release (the script still comes from the repository;
 `ARBITER_VERSION` selects the tarball):
