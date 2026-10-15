@@ -111,33 +111,48 @@ non-starter for merging.
 
 ## Versioning and releases
 
-Arbiter is pre-1.0 and treats a merge to `main` as a patch release
-(`0.12.2` → `0.12.3`). `main` requires pull requests, so `version.yml`
-opens a `chore/release-vX.Y.Z` PR (CMakeLists `INDEX_VERSION`,
-`CHANGELOG.md` `[Unreleased]` cut, docs install pin) rather than
-pushing to `main`. Squash-merging that PR tags `vX.Y.Z` and
-dispatches the binary release.
+A merge to `main` is a patch release (`0.13.14` → `0.13.15`) unless
+the pull request already set `project(arbiter VERSION …)` higher than
+the latest tag. `main` requires pull requests, so `version.yml` opens
+a `chore/release-vX.Y.Z` PR (CMakeLists, `CHANGELOG.md` `[Unreleased]`
+cut, docs install pin) rather than pushing to `main`.
 
-Leave the version number alone in ordinary PRs. Notes go under
+**1.0.0 is a normal pull request** that changes that line to
+`project(arbiter VERSION 1.0.0)`. Do not use Actions → Version bump →
+major. After the PR merges and CI is green on the squash commit, the
+version workflow tags `v1.0.0` and dispatches the binary release. It
+does not open a second release PR for a version already in CMakeLists.
+
+Bot-opened release PRs are squash-merged from `version.yml`. Those
+pushes use `GITHUB_TOKEN`, which does not start workflows. The version
+job dispatches `ci.yml` on the release branch, waits, merges, dispatches
+`ci.yml` on the squash commit, waits, then tags. A human merge of the
+same PR starts CI by itself; the workflow tags once that run is green.
+
+Leave the version number alone in ordinary feature PRs. Notes go under
 `[Unreleased]`; the bump job cuts them on merge.
 
 The Actions repo setting **Allow GitHub Actions to create and approve
 pull requests** must be on, or the bot cannot open the release PR.
-If required reviews block auto-merge, merge `chore/release-v*` by
-hand (keep the `chore(release): vX.Y.Z` title).
+If required reviews block the squash merge, merge `chore/release-v*`
+by hand (keep the `chore(release): vX.Y.Z` title).
 
-Minor and major are never automatic.  To ship one:
+Branch protection cannot be set from the workflow file. Mark these CI
+jobs as required status checks so a red PR cannot merge:
+`version-bump-script`, `macos-arm64`, `linux-x86_64`,
+`linux-x86_64-asan`, `linux-x86_64-tsan`.
 
-- **Minor, major, or a specific X.Y.Z** — Actions → Version bump →
-  Run workflow.  Pick `minor` / `major`, or type an explicit version.
-- **Version in the PR itself** — change `project(arbiter VERSION …)`
-  (and optionally cut the changelog heading).  On merge the workflow
-  tags that version instead of auto-patching.  Use this for a
-  prepare-release PR.
+Minor bumps are not automatic. To ship one:
+
+- **Minor or a specific X.Y.Z other than the 1.0 cut** — Actions →
+  Version bump → Run workflow. Pick `minor`, or type an explicit version.
+- **Version in the PR itself** — change `project(arbiter VERSION …)`.
+  On merge the workflow tags that version instead of auto-patching.
+  This is the 1.0 path.
 - **Skip a release** — put `[skip version]` in the squash title or
-  merge commit message.  Tag later by hand or via workflow_dispatch.
+  merge commit message. Tag later by hand or via workflow_dispatch.
 - **Tag only** — `git tag vX.Y.Z && git push origin vX.Y.Z` still
-  runs `release.yml` directly.  Keep CMakeLists in sync with the tag
+  runs `release.yml` directly. Keep CMakeLists in sync with the tag
   or the binary will advertise a stale `INDEX_VERSION`.
 
 ## What's in scope

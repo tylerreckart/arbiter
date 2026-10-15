@@ -17,15 +17,21 @@ on:
   pull_request:
     branches:
       - main
+  # version.yml dispatches this on bot release branches and on the
+  # squash commit. GITHUB_TOKEN pushes do not start workflows, so
+  # workflow_dispatch is the path that still runs CI for those SHAs.
+  workflow_dispatch:
 
 permissions:
   contents: read
 
-# Cancel an in-flight CI run when a new commit lands on the same ref —
-# saves runner minutes on rapid pushes / force-pushes.
+# Cancel an in-flight pull-request run when a new commit lands on that
+# branch. Pushes to main, and workflow_dispatch runs, do not cancel each
+# other: a release squash and a feature merge can both be on main, and
+# cancelling one would drop the CI run the version workflow is waiting on.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # Fixture tests for the main-merge version bumper.  Cheap (temp git
